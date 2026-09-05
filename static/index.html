@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>机电学习助手</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/style.css?v=27">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-head">
+        <button id="newChatBtn" class="new-chat">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          <span>开启新对话</span>
+        </button>
+        <label class="search-box">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input id="searchInput" type="text" placeholder="搜索对话" autocomplete="off">
+        </label>
+      </div>
+
+      <div class="sidebar-body">
+        <div class="sidebar-label">历史对话</div>
+        <div id="convList" class="conv-list"></div>
+      </div>
+
+      <div class="sidebar-foot">
+        <span class="sidebar-logo">⚙</span>
+        <span>机电学习助手</span>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <button id="sidebarToggle" class="icon-btn" title="收起侧边栏">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        </button>
+        <div class="topbar-title">机电学习助手</div>
+      </header>
+
+      <main id="chat" class="chat">
+        <div class="welcome">
+          <div class="welcome-card">
+            <div class="welcome-logo">⚙</div>
+            <h2>机电学习助手</h2>
+            <p id="introText" class="intro-text"></p>
+            <button id="startBtn" class="start-btn" type="button" style="display:none">开始</button>
+          </div>
+        </div>
+      </main>
+
+      <section id="graphView" class="graph-view" hidden>
+        <aside class="kg-sidebar">
+          <div class="kg-panel-head">
+            <span class="kg-panel-title">图谱列表</span>
+            <button id="kgNewGraph" class="kg-new-btn" title="新建空图谱">新建</button>
+          </div>
+          <div id="kgGraphList" class="kg-graph-list"></div>
+          <div class="kg-panel-title">导入历史</div>
+          <div id="kgImportHistory" class="kg-import-history"></div>
+        </aside>
+        <div class="kg-main">
+          <div class="graph-bar">
+            <button id="graphBackBtn" class="icon-btn" title="返回对话">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            </button>
+            <span class="graph-bar-title" id="kgTitle">知识图谱</span>
+            <span class="graph-hint" id="kgStats"></span>
+          </div>
+          <div class="kg-canvas" id="kgCanvas">
+            <svg id="kgSvg"><g id="kgRoot"></g></svg>
+            <div class="graph-legend" id="kgLegend" hidden></div>
+            <div class="graph-controls" id="kgControls">
+              <div class="controls-group">
+                <button data-act="zoom-in" title="放大">＋</button>
+                <button data-act="zoom-out" title="缩小">－</button>
+                <button data-act="reset" title="重置视图">复位</button>
+                <button data-act="fit" title="适配视图">适配</button>
+              </div>
+              <div class="controls-divider"></div>
+              <div class="controls-group">
+                <button data-layout="force" class="active" title="力导向布局">力导</button>
+                <button data-layout="circular" title="环形布局">环形</button>
+                <button data-layout="grid" title="网格布局">网格</button>
+                <button data-layout="concentric" title="同心圆布局">同心</button>
+              </div>
+            </div>
+            <div class="node-tooltip" id="kgTooltip" hidden></div>
+            <div class="graph-empty" id="kgEmpty" hidden>
+              <div class="graph-empty-icon">📊</div>
+              <p>暂无图谱数据</p>
+              <p class="text-muted">在对话中生成四年学习计划后,点击"一键导入知识图谱"即可在此查看</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <footer class="composer">
+        <div class="func-bar">
+          <div class="mode-switch" id="modeSwitch">
+            <button id="modeBtn" class="mode-btn" type="button">
+              <span id="modeIcon">🧭</span><span id="modeLabel">规划模式</span><span class="mode-arrow">▾</span>
+            </button>
+            <div id="modeMenu" class="mode-menu" hidden>
+              <button class="mode-option" data-mode="plan" type="button">🧭 规划模式</button>
+              <button class="mode-option" data-mode="challenge" type="button">🏆 竞赛学习模式</button>
+            </div>
+          </div>
+          <button id="booksBtn2" class="func-btn" type="button" title="图书">📚 图书</button>
+          <button id="graphBtn2" class="func-btn" type="button" title="知识图谱">📊 知识图谱</button>
+        </div>
+        <div class="input-wrap">
+          <textarea id="input" rows="1" placeholder="给机电学习助手发送消息" autocomplete="off"></textarea>
+          <button id="sendBtn" class="send-btn" title="发送">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+          </button>
+        </div>
+        <div class="composer-hint">内容由 AI 生成,请结合实际情况判断</div>
+      </footer>
+    </div>
+  </div>
+
+  <div id="booksOverlay" class="books-overlay" hidden>
+    <div class="books-modal">
+      <div class="books-modal-head">
+        <button id="booksBackBtn" class="icon-btn" title="返回" hidden>←</button>
+        <span id="booksModalTitle" class="books-modal-title">图书</span>
+        <button id="booksCloseBtn" class="icon-btn" title="关闭">×</button>
+      </div>
+      <div class="books-modal-body">
+        <div id="booksMenu" class="books-menu">
+          <button class="books-menu-btn" data-books="search">🔍 图书搜索</button>
+          <button class="books-menu-btn" data-books="mine">📚 我的书籍</button>
+          <button class="books-menu-btn" data-books="md">📄 我的书籍（Markdown）</button>
+        </div>
+        <div id="booksSearchView" class="books-view" hidden>
+          <div class="books-search-bar">
+            <input id="bookSearchInput" type="text" placeholder="输入书籍名称，如：电工电子学基础" autocomplete="off" />
+            <button id="bookSearchBtn" class="books-search-btn">搜索</button>
+          </div>
+          <div id="bookStatus" class="book-status" hidden></div>
+          <div id="bookProgress" class="book-progress" hidden>
+            <div class="book-progress-fill"></div>
+          </div>
+          <pre id="bookSearchLog" class="book-parse-log" hidden></pre>
+          <div id="bookResults" class="book-results"></div>
+        </div>
+        <div id="booksMineView" class="books-view" hidden>
+          <div id="bookDropZone" class="book-drop-zone">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M12 4 7 9M12 4l5 5"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+            <span>将文件夹中的 PDF 文件拖拽到此处，或点击选择文件</span>
+          </div>
+          <input id="bookFileInput" type="file" accept="application/pdf,.pdf" hidden />
+          <div id="bookMineStatus" class="book-status" hidden></div>
+          <div id="bookMineList" class="book-mine-list"></div>
+        </div>
+        <div id="booksMdView" class="books-view" hidden>
+          <div id="bookMdStatus" class="book-status" hidden></div>
+          <div id="bookMdList" class="book-mine-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="bookNameOverlay" class="book-name-overlay" hidden>
+      <div class="book-name-modal">
+        <div class="book-name-title">给你添加的书籍命名</div>
+        <input id="bookNameInput" class="book-name-input" type="text" placeholder="请输入书籍名称" autocomplete="off" />
+        <div class="book-name-actions">
+          <button id="bookNameCancel" class="book-name-btn" type="button">取消</button>
+          <button id="bookNameOk" class="book-name-btn primary" type="button">添加</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="bookParseOverlay" class="book-name-overlay" hidden>
+      <div class="book-parse-modal">
+        <div class="book-parse-head">
+          <span id="bookParseTitle" class="book-name-title">识别结果</span>
+          <button id="bookParseClose" class="book-name-btn" type="button">关闭</button>
+        </div>
+        <div id="bookParseProgressWrap" class="book-parse-progress-wrap" hidden>
+          <div class="book-parse-progress-track">
+            <div id="bookParseProgressFill" class="book-parse-progress-fill"></div>
+          </div>
+          <div id="bookParsePercent" class="book-parse-percent">0%</div>
+        </div>
+        <pre id="bookParseLog" class="book-parse-log" hidden></pre>
+        <div id="bookParseText" class="book-parse-text"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/vendor/d3.min.js?v=3"></script>
+  <script src="/static/graph.js?v=3"></script>
+  <script>
+    window.MathJax = {
+      tex: { inlineMath: [["$", "$"], ["\\(", "\\)"]], displayMath: [["$$", "$$"], ["\\[", "\\]"]] },
+      options: { skipHtmlTags: ["script", "noscript", "style", "textarea", "pre", "code"] },
+      startup: { typeset: false }
+    };
+  </script>
+  <script src="/static/vendor/tex-svg.js"></script>
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/app.js?v=27"></script>
+</body>
+</html>

@@ -1,0 +1,484 @@
+"""机电学习助手 Web 服务入口。"""
+
+import json
+import os
+import queue
+import threading
+import traceback
+
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+import uvicorn
+
+from agent.config import load_dotenv
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(BASE_DIR, ".env"))
+
+from agent import anspire, books, books_md, graph_store, pdf_extract, store, tasks, workflow  # noqa: E402  加载 .env 后再导入
+
+app = FastAPI(title="机电学习助手")
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+
+
+@app.middleware("http")
+async def no_cache_static(request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
+class ChatIn(BaseModel):
+    message: str
+    session_id: str = "default"
+    client_id: str = ""
+    mode: str = "plan"
+
+
+class ResetIn(BaseModel):
+    session_id: str = "default"
+
+
+class GraphImportIn(BaseModel):
+    session_id: str = "default"
+    graph: dict
+    name: str = ""
+
+
+class GraphSaveIn(BaseModel):
+    name: str = ""
+    nodes: list = []
+    edges: list = []
+    importHistory: list = []
+
+
+class GraphRenameIn(BaseModel):
+    name: str
+
+
+class BookSearchIn(BaseModel):
+    query: str
+
+
+class BookDownloadIn(BaseModel):
+    url: str
+    download_url: str = ""
+    title: str = ""
+
+
+class AnspireSearchIn(BaseModel):
+    query: str
+    top_k: int = 10
+
+
+class PdfParseIn(BaseModel):
+    filename: str
+    max_chars: int = 12000
+
+
+@app.get("/")
+def index():
+    return FileResponse(os.path.join(BASE_DIR, "static", "index.html"))
+
+
+@app.api_route("/favicon.ico", methods=["GET", "HEAD"], include_in_schema=False)
+def favicon_ico():
+    # 浏览器默认会请求 /favicon.ico;重定向到已有的 SVG 图标,避免 404
+    return RedirectResponse("/static/favicon.svg", status_code=307)
+
+
+@app.post("/api/chat")
+def chat(body: ChatIn):
+    try:
+        reply, profile = workflow.handle_message(body.session_id, body.message, mode=body.mode)
+        store.set_conversation_client(body.session_id, body.client_id)
+        return {"reply": reply, "profile": profile}
+    except Exception as exc:
+        print("=" * 60)
+        traceback.print_exc()
+        print("=" * 60)
+        return JSONResponse(status_code=500, content={"error": f"{type(exc).__name__}: {exc}"})
+
+
+@app.post("/api/chat/stream")
+def chat_stream(body: ChatIn):
+    """以 Server-Sent Events 返回思考过程和正文流。"""
+    def gen():
+        events = queue.Queue()
+
+        def emit(event, data):
+            events.put((event, data))
+
+        def worker():
+            try:
+                workflow.run(body.session_id, body.message, emit=emit, stream=True, mode=body.mode)
+                store.set_conversation_client(body.session_id, body.client_id)
+                events.put(("done", {"profile": store.get_profile()}))
+            except Exception as exc:
+                print("=" * 60)
+                traceback.print_exc()
+                print("=" * 60)
+                events.put(("error", {"error": f"{type(exc).__name__}: {exc}"}))
+
+        threading.Thread(target=worker, daemon=True).start()
+        while True:
+            event, data = events.get()
+            yield f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+            if event in ("done", "error"):
+                break
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/chat/retry")
+def chat_retry(body: ChatIn):
+    """一键重试:重新生成上一条助手回复(公司推荐/岗位检索等自动环节)。"""
+    def gen():
+        events = queue.Queue()
+
+        def emit(event, data):
+            events.put((event, data))
+
+        def worker():
+            try:
+                workflow.retry_last(body.session_id, emit=emit, stream=True, mode=body.mode)
+                store.set_conversation_client(body.session_id, body.client_id)
+                events.put(("done", {"profile": store.get_profile()}))
+            except Exception as exc:
+                print("=" * 60)
+                traceback.print_exc()
+                print("=" * 60)
+                events.put(("error", {"error": f"{type(exc).__name__}: {exc}"}))
+
+        threading.Thread(target=worker, daemon=True).start()
+        while True:
+            event, data = events.get()
+            yield f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+            if event in ("done", "error"):
+                break
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/profile")
+def profile(session_id: str = "default"):
+    return store.get_profile(session_id)
+
+
+# ---------- 知识图谱(移植自 zstp 后端 API) ----------
+
+@app.get("/api/graphs")
+def graphs_list():
+    return graph_store.list_graphs()
+
+
+@app.get("/api/graphs/{graph_id}")
+def graphs_get(graph_id: str):
+    graph = graph_store.get_graph(graph_id)
+    if not graph:
+        return JSONResponse(status_code=404, content={"error": "图谱不存在"})
+    return graph
+
+
+@app.put("/api/graphs/{graph_id}")
+def graphs_put(graph_id: str, body: GraphSaveIn):
+    graph_store.save_graph(
+        graph_id,
+        name=body.name or None,
+        nodes=body.nodes,
+        edges=body.edges,
+        import_history=body.importHistory,
+    )
+    return {"ok": True}
+
+
+@app.patch("/api/graphs/{graph_id}")
+def graphs_patch(graph_id: str, body: GraphRenameIn):
+    name = (body.name or "").strip()
+    if not name:
+        return JSONResponse(status_code=400, content={"error": "name 不能为空"})
+    graph_store.rename_graph(graph_id, name)
+    return {"ok": True}
+
+
+@app.delete("/api/graphs/{graph_id}")
+def graphs_delete(graph_id: str):
+    graph_store.delete_graph(graph_id)
+    return {"ok": True}
+
+
+@app.delete("/api/graphs/{graph_id}/imports/{import_id}")
+def graphs_remove_import(graph_id: str, import_id: str):
+    ok = graph_store.remove_import(graph_id, import_id)
+    if not ok:
+        return JSONResponse(status_code=404, content={"error": "导入记录不存在"})
+    return {"ok": True}
+
+
+@app.post("/api/graph/import")
+def graph_import(body: GraphImportIn):
+    """一键导入:把大模型生成的学习计划知识图谱 JSON 建成本地新图谱。"""
+    try:
+        name = (body.name or "").strip()
+        if not name:
+            major = (store.get_profile(body.session_id) or {}).get("user_major")
+            name = f"{major}·四年学习计划" if major else ""
+        graph_id = graph_store.create_graph_from_json(body.graph, name=name or None)
+        return {"ok": True, "graph_id": graph_id}
+    except Exception as exc:
+        print("=" * 60)
+        traceback.print_exc()
+        print("=" * 60)
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+# ---------- 图书:搜索 / 下载 / 我的书籍 ----------
+
+@app.post("/api/books/search")
+def books_search(body: BookSearchIn):
+    query = (body.query or "").strip()
+    if not query:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "请输入书籍名称"})
+    running = tasks.get_running_task("search", query)
+    if running:
+        return {"ok": True, "task_id": running["id"], "already_running": True}
+    tid = tasks.create_task("search", query)
+
+    def worker():
+        def lc(line):
+            tasks.append_log(tid, line)
+
+        try:
+            results = books.search_books(query, log_cb=lc)
+            tasks.finish_task(tid, result={"results": results})
+        except Exception as exc:
+            print("=" * 60)
+            traceback.print_exc()
+            print("=" * 60)
+            tasks.finish_task(tid, error=f"{type(exc).__name__}: {exc}")
+
+    tasks.spawn_worker(worker)
+    return {"ok": True, "task_id": tid, "already_running": False}
+
+
+@app.get("/api/books/search/status/{task_id}")
+def books_search_status(task_id: str):
+    t = tasks.get_task(task_id)
+    if not t:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "任务不存在"})
+    return t
+
+
+@app.post("/api/books/download")
+def books_download(body: BookDownloadIn):
+    url = (body.url or "").strip()
+    if not url:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "缺少书籍链接"})
+    running = tasks.get_running_task("download", url)
+    if running:
+        return {"ok": True, "task_id": running["id"], "already_running": True}
+    tid = tasks.create_task("download", url)
+
+    def worker():
+        def pc(p):
+            tasks.update_task(tid, progress=p)
+
+        try:
+            info = books.download_book(
+                body.url,
+                download_url=body.download_url,
+                title=body.title,
+                progress_cb=pc,
+            )
+            tasks.finish_task(tid, result=info)
+        except Exception as exc:
+            print("=" * 60)
+            traceback.print_exc()
+            print("=" * 60)
+            tasks.finish_task(tid, error=f"{type(exc).__name__}: {exc}")
+
+    tasks.spawn_worker(worker)
+    return {"ok": True, "task_id": tid, "already_running": False}
+
+
+@app.get("/api/books/download/status/{task_id}")
+def books_download_status(task_id: str):
+    t = tasks.get_task(task_id)
+    if not t:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "任务不存在"})
+    return t
+
+
+@app.post("/api/books/upload")
+async def books_upload(request: Request, title: str = ""):
+    """用户本地上传 PDF 到“我的书籍”(body 为 PDF 原始字节,name 由 query 传入)。"""
+    try:
+        content = await request.body()
+        info = books.upload_book(title, content)
+        return {"ok": True, **info}
+    except Exception as exc:
+        print("=" * 60)
+        traceback.print_exc()
+        print("=" * 60)
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+# ---------- 增强搜索:Anspire AI Search ----------
+
+@app.post("/api/search/anspire")
+def anspire_search_api(body: AnspireSearchIn):
+    """用户点击“增强搜索”后,用 Anspire AI Search 对关键词再次检索。"""
+    try:
+        results = anspire.anspire_search(body.query, top_k=body.top_k)
+        return {"ok": True, "results": results}
+    except Exception as exc:
+        print("=" * 60)
+        traceback.print_exc()
+        print("=" * 60)
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+@app.get("/api/books")
+def books_list():
+    return {"ok": True, "books": books.list_books()}
+
+
+@app.get("/api/books/file/{filename}")
+def books_file(filename: str):
+    path = books.book_file_path(filename)
+    if not path:
+        return JSONResponse(status_code=404, content={"error": "文件不存在"})
+    return FileResponse(
+        path, media_type="application/pdf", filename=os.path.basename(path)
+    )
+
+
+@app.post("/api/pdf/parse")
+def pdf_parse(body: PdfParseIn):
+    """启动后台识别任务。同一本书正在识别时复用(去重),不重复执行。"""
+    filename = (body.filename or "").strip()
+    if not filename:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "缺少文件名"})
+    running = tasks.get_running_task("parse", filename)
+    if running:
+        return {"ok": True, "task_id": running["id"], "already_running": True}
+    tid = tasks.create_task("parse", filename)
+
+    def worker():
+        def pc(p):
+            tasks.update_task(tid, progress=p)
+
+        def lc(line):
+            tasks.append_log(tid, line)
+
+        try:
+            text = pdf_extract.extract_pdf(filename, progress_cb=pc, log_cb=lc)
+        except Exception as exc:
+            print("=" * 60)
+            traceback.print_exc()
+            print("=" * 60)
+            tasks.finish_task(tid, error=f"{type(exc).__name__}: {exc}")
+            return
+        try:
+            info = books_md.save_markdown(filename, text)
+        except Exception as exc:
+            print("=" * 60)
+            traceback.print_exc()
+            print("=" * 60)
+            tasks.finish_task(tid, error=f"保存 Markdown 失败: {type(exc).__name__}: {exc}")
+            return
+        tasks.finish_task(tid, result={"md_filename": info["filename"], "text": text[: body.max_chars]})
+
+    tasks.spawn_worker(worker)
+    return {"ok": True, "task_id": tid, "already_running": False}
+
+
+@app.get("/api/pdf/parse/status/{task_id}")
+def pdf_parse_status(task_id: str):
+    t = tasks.get_task(task_id)
+    if not t:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "任务不存在"})
+    return t
+
+
+@app.get("/api/books/md")
+def books_md_list():
+    return {"ok": True, "markdowns": books_md.list_markdowns()}
+
+
+@app.get("/api/books/md/file/{filename}")
+def books_md_file(filename: str):
+    path = books_md.markdown_file_path(filename)
+    if not path:
+        return JSONResponse(status_code=404, content={"error": "文件不存在"})
+    return FileResponse(
+        path,
+        media_type="text/markdown; charset=utf-8",
+        filename=os.path.basename(path),
+    )
+
+
+@app.delete("/api/books/md/{filename}")
+def books_md_delete(filename: str):
+    if books_md.delete_markdown(filename):
+        return {"ok": True}
+    return JSONResponse(status_code=404, content={"error": "文件不存在"})
+
+
+@app.delete("/api/books/{filename}")
+def books_delete(filename: str):
+    if books.delete_book(filename):
+        return {"ok": True}
+    return JSONResponse(status_code=404, content={"error": "文件不存在"})
+
+
+@app.get("/api/sessions")
+def sessions(q: str = "", client_id: str = ""):
+    return store.list_conversations(q or None, client_id or None)
+
+
+@app.get("/api/sessions/{session_id}/messages")
+def session_messages(session_id: str, client_id: str = ""):
+    owner = store.get_conversation_client(session_id)
+    if client_id and owner and owner != client_id:
+        return JSONResponse(status_code=404, content={"error": "会话不存在或无权访问"})
+    return store.get_messages(session_id)
+
+
+@app.delete("/api/sessions/{session_id}")
+def delete_session(session_id: str, client_id: str = ""):
+    owner = store.get_conversation_client(session_id)
+    if client_id and owner and owner != client_id:
+        return JSONResponse(status_code=403, content={"error": "无权删除该会话"})
+    store.delete_conversation(session_id)
+    return {"ok": True}
+
+
+@app.post("/api/reset")
+def reset(body: ResetIn):
+    store.reset_session(body.session_id)
+    return {"ok": True}
+
+
+if __name__ == "__main__":
+    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=False)
