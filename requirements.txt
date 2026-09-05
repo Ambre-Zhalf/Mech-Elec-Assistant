@@ -4,6 +4,7 @@ requests>=2.32.0
 cryptography>=42.0.0
 playwright>=1.40.0
 bilibili-cli>=0.6.0
+# 暂时下架:PDF 识别(利用本机 MinerU 扫描 PDF)已下架,以下依赖仅识别功能使用,恢复时取消注释即可
 # PDF 识别:本地纯文本抽取使用 pymupdf(模块名 fitz)
-pymupdf>=1.24.0
+# pymupdf>=1.24.0
 # 注: 扫描件/复杂排版走本机完整版 MinerU CLI(已安装,首次运行需下载模型),见 README

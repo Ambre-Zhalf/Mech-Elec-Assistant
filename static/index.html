@@ -133,7 +133,8 @@
         <div id="booksMenu" class="books-menu">
           <button class="books-menu-btn" data-books="search">🔍 图书搜索</button>
           <button class="books-menu-btn" data-books="mine">📚 我的书籍</button>
-          <button class="books-menu-btn" data-books="md">📄 我的书籍（Markdown）</button>
+          <!-- 暂时下架：“我的书籍（Markdown）”入口,配合“利用本机 MinerU 扫描 PDF”的识别功能下架 -->
+          <!-- <button class="books-menu-btn" data-books="md">📄 我的书籍（Markdown）</button> -->
         </div>
         <div id="booksSearchView" class="books-view" hidden>
           <div class="books-search-bar">
@@ -156,6 +157,7 @@
           <div id="bookMineStatus" class="book-status" hidden></div>
           <div id="bookMineList" class="book-mine-list"></div>
         </div>
+        <!-- 暂时下架：“我的书籍（Markdown）”视图,原“识别”结果存放区,配合识别功能下架 -->
         <div id="booksMdView" class="books-view" hidden>
           <div id="bookMdStatus" class="book-status" hidden></div>
           <div id="bookMdList" class="book-mine-list"></div>
@@ -174,6 +176,7 @@
       </div>
     </div>
 
+    <!-- 暂时下架：PDF 识别结果弹窗,配合“利用本机 MinerU 扫描 PDF”的识别功能下架 -->
     <div id="bookParseOverlay" class="book-name-overlay" hidden>
       <div class="book-parse-modal">
         <div class="book-parse-head">

@@ -88,7 +88,8 @@ TOOL_CAPS = {
     "bilibili_search": int(os.environ.get("TOOL_CAP_BILIBILI", "14")),
     "render_page": int(os.environ.get("TOOL_CAP_RENDER_PAGE", "6")),
     "find_recruitment_links": int(os.environ.get("TOOL_CAP_FIND_RECRUIT", "3")),
-    "parse_pdf": int(os.environ.get("TOOL_CAP_PARSE_PDF", "4")),
+    # 暂时下架:原“parse_pdf”(PDF 识别)工具已下架,不再计入工具额度
+    # "parse_pdf": int(os.environ.get("TOOL_CAP_PARSE_PDF", "4")),
 }
 
 
@@ -107,8 +108,9 @@ def _describe_tool(name, args):
         return "正在搜索B站视频:" + str(args.get("query", ""))
     if name == "find_recruitment_links":
         return "正在发掘招聘入口:" + str(args.get("company", ""))
-    if name == "parse_pdf":
-        return "正在识别PDF:" + str(args.get("filename", ""))
+    # 暂时下架:原“parse_pdf”工具过程文案
+    # if name == "parse_pdf":
+    #     return "正在识别PDF:" + str(args.get("filename", ""))
     return "调用工具:" + name
 
 

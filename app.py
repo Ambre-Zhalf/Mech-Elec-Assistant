@@ -17,7 +17,8 @@ from agent.config import load_dotenv
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-from agent import anspire, books, books_md, graph_store, pdf_extract, store, tasks, workflow  # noqa: E402  加载 .env 后再导入
+# 暂时下架:原导入 books_md / pdf_extract 用于“利用本机 MinerU 扫描 PDF”的书籍识别功能
+from agent import anspire, books, graph_store, store, tasks, workflow  # noqa: E402  加载 .env 后再导入
 
 app = FastAPI(title="机电学习助手")
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
@@ -74,9 +75,10 @@ class AnspireSearchIn(BaseModel):
     top_k: int = 10
 
 
-class PdfParseIn(BaseModel):
-    filename: str
-    max_chars: int = 12000
+# 暂时下架:原“PDF 识别”请求体,配合已下架的 /api/pdf/parse 使用
+# class PdfParseIn(BaseModel):
+#     filename: str
+#     max_chars: int = 12000
 
 
 @app.get("/")
@@ -373,76 +375,77 @@ def books_file(filename: str):
     )
 
 
-@app.post("/api/pdf/parse")
-def pdf_parse(body: PdfParseIn):
-    """启动后台识别任务。同一本书正在识别时复用(去重),不重复执行。"""
-    filename = (body.filename or "").strip()
-    if not filename:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "缺少文件名"})
-    running = tasks.get_running_task("parse", filename)
-    if running:
-        return {"ok": True, "task_id": running["id"], "already_running": True}
-    tid = tasks.create_task("parse", filename)
-
-    def worker():
-        def pc(p):
-            tasks.update_task(tid, progress=p)
-
-        def lc(line):
-            tasks.append_log(tid, line)
-
-        try:
-            text = pdf_extract.extract_pdf(filename, progress_cb=pc, log_cb=lc)
-        except Exception as exc:
-            print("=" * 60)
-            traceback.print_exc()
-            print("=" * 60)
-            tasks.finish_task(tid, error=f"{type(exc).__name__}: {exc}")
-            return
-        try:
-            info = books_md.save_markdown(filename, text)
-        except Exception as exc:
-            print("=" * 60)
-            traceback.print_exc()
-            print("=" * 60)
-            tasks.finish_task(tid, error=f"保存 Markdown 失败: {type(exc).__name__}: {exc}")
-            return
-        tasks.finish_task(tid, result={"md_filename": info["filename"], "text": text[: body.max_chars]})
-
-    tasks.spawn_worker(worker)
-    return {"ok": True, "task_id": tid, "already_running": False}
-
-
-@app.get("/api/pdf/parse/status/{task_id}")
-def pdf_parse_status(task_id: str):
-    t = tasks.get_task(task_id)
-    if not t:
-        return JSONResponse(status_code=404, content={"ok": False, "error": "任务不存在"})
-    return t
-
-
-@app.get("/api/books/md")
-def books_md_list():
-    return {"ok": True, "markdowns": books_md.list_markdowns()}
-
-
-@app.get("/api/books/md/file/{filename}")
-def books_md_file(filename: str):
-    path = books_md.markdown_file_path(filename)
-    if not path:
-        return JSONResponse(status_code=404, content={"error": "文件不存在"})
-    return FileResponse(
-        path,
-        media_type="text/markdown; charset=utf-8",
-        filename=os.path.basename(path),
-    )
-
-
-@app.delete("/api/books/md/{filename}")
-def books_md_delete(filename: str):
-    if books_md.delete_markdown(filename):
-        return {"ok": True}
-    return JSONResponse(status_code=404, content={"error": "文件不存在"})
+# ---------- 暂时下架:利用本机 MinerU 扫描 PDF 书籍 / “我的书籍”识别(含“我的书籍(Markdown)”) ----------
+# @app.post("/api/pdf/parse")
+# def pdf_parse(body: PdfParseIn):
+#     """启动后台识别任务。同一本书正在识别时复用(去重),不重复执行。"""
+#     filename = (body.filename or "").strip()
+#     if not filename:
+#         return JSONResponse(status_code=400, content={"ok": False, "error": "缺少文件名"})
+#     running = tasks.get_running_task("parse", filename)
+#     if running:
+#         return {"ok": True, "task_id": running["id"], "already_running": True}
+#     tid = tasks.create_task("parse", filename)
+#
+#     def worker():
+#         def pc(p):
+#             tasks.update_task(tid, progress=p)
+#
+#         def lc(line):
+#             tasks.append_log(tid, line)
+#
+#         try:
+#             text = pdf_extract.extract_pdf(filename, progress_cb=pc, log_cb=lc)
+#         except Exception as exc:
+#             print("=" * 60)
+#             traceback.print_exc()
+#             print("=" * 60)
+#             tasks.finish_task(tid, error=f"{type(exc).__name__}: {exc}")
+#             return
+#         try:
+#             info = books_md.save_markdown(filename, text)
+#         except Exception as exc:
+#             print("=" * 60)
+#             traceback.print_exc()
+#             print("=" * 60)
+#             tasks.finish_task(tid, error=f"保存 Markdown 失败: {type(exc).__name__}: {exc}")
+#             return
+#         tasks.finish_task(tid, result={"md_filename": info["filename"], "text": text[: body.max_chars]})
+#
+#     tasks.spawn_worker(worker)
+#     return {"ok": True, "task_id": tid, "already_running": False}
+#
+#
+# @app.get("/api/pdf/parse/status/{task_id}")
+# def pdf_parse_status(task_id: str):
+#     t = tasks.get_task(task_id)
+#     if not t:
+#         return JSONResponse(status_code=404, content={"ok": False, "error": "任务不存在"})
+#     return t
+#
+#
+# @app.get("/api/books/md")
+# def books_md_list():
+#     return {"ok": True, "markdowns": books_md.list_markdowns()}
+#
+#
+# @app.get("/api/books/md/file/{filename}")
+# def books_md_file(filename: str):
+#     path = books_md.markdown_file_path(filename)
+#     if not path:
+#         return JSONResponse(status_code=404, content={"error": "文件不存在"})
+#     return FileResponse(
+#         path,
+#         media_type="text/markdown; charset=utf-8",
+#         filename=os.path.basename(path),
+#     )
+#
+#
+# @app.delete("/api/books/md/{filename}")
+# def books_md_delete(filename: str):
+#     if books_md.delete_markdown(filename):
+#         return {"ok": True}
+#     return JSONResponse(status_code=404, content={"error": "文件不存在"})
 
 
 @app.delete("/api/books/{filename}")

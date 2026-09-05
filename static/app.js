@@ -27,6 +27,7 @@ const bookMineList = document.getElementById("bookMineList");
 const bookDropZone = document.getElementById("bookDropZone");
 const bookFileInput = document.getElementById("bookFileInput");
 const bookMineStatus = document.getElementById("bookMineStatus");
+// 暂时下架：以下引用属于“利用本机 MinerU 扫描 PDF”的识别 / “我的书籍(Markdown)”功能,元素仍在页面但不会被使用
 const bookMdStatus = document.getElementById("bookMdStatus");
 const bookMdList = document.getElementById("bookMdList");
 const bookNameOverlay = document.getElementById("bookNameOverlay");
@@ -855,15 +856,16 @@ function showBooksMine() {
   loadMyBooks();
 }
 
-function showBooksMd() {
-  booksMenu.hidden = true;
-  booksSearchView.hidden = true;
-  booksMineView.hidden = true;
-  booksMdView.hidden = false;
-  booksModalTitle.textContent = "我的书籍（Markdown）";
-  booksBackBtn.hidden = false;
-  loadMyMarkdowns();
-}
+// 暂时下架：“我的书籍（Markdown）”视图入口函数
+// function showBooksMd() {
+//   booksMenu.hidden = true;
+//   booksSearchView.hidden = true;
+//   booksMineView.hidden = true;
+//   booksMdView.hidden = false;
+//   booksModalTitle.textContent = "我的书籍（Markdown）";
+//   booksBackBtn.hidden = false;
+//   loadMyMarkdowns();
+// }
 
 function openBooks() {
   booksOverlay.hidden = false;
@@ -1064,7 +1066,8 @@ function renderMyBooks(books) {
       '</div>' +
       '<div class="book-actions">' +
         '<a class="book-btn" href="/api/books/file/' + encodeURIComponent(b.filename) + '" target="_blank" rel="noopener noreferrer">打开</a>' +
-        '<button class="book-btn" data-parse-book="' + fname + '">识别</button>' +
+        // 暂时下架：“识别”按钮,配合“利用本机 MinerU 扫描 PDF”的识别功能下架
+        // '<button class="book-btn" data-parse-book="' + fname + '">识别</button>' +
         '<button class="book-btn danger" data-delete-book="' + fname + '">删除</button>' +
       '</div></div>';
   }).join("");
@@ -1093,6 +1096,7 @@ async function deleteBook(filename) {
   }
 }
 
+/* ---------- 暂时下架：以下为原“利用本机 MinerU 扫描 PDF”的书籍识别 / “我的书籍(Markdown)”相关前端逻辑 ----------
 async function renderMarkdownInto(text, title) {
   bookParseTitle.textContent = title || "预览";
   // 先把公式($...$ / $$...$$)换成占位符,避免 marked 把数学里的 _、* 当强调破坏
@@ -1311,6 +1315,7 @@ async function loadMyMarkdowns() {
     bookMdList.innerHTML = '<div class="book-status error">⚠️ ' + escapeHtml(e.message || "加载失败") + '</div>';
   }
 }
+---------- 暂时下架 ---------- */
 
 // ---------- 我的书籍:本地上传 PDF ----------
 
@@ -1381,7 +1386,8 @@ booksOverlay.addEventListener("click", e => {
 booksMenu.querySelectorAll("[data-books]").forEach(b => {
   b.addEventListener("click", () => {
     if (b.dataset.books === "search") showBooksSearch();
-    else if (b.dataset.books === "md") showBooksMd();
+    // 暂时下架：原“我的书籍（Markdown）”入口跳转
+    // else if (b.dataset.books === "md") showBooksMd();
     else showBooksMine();
   });
 });
@@ -1394,17 +1400,19 @@ bookResults.addEventListener("click", e => {
   if (btn) downloadBook(btn);
 });
 bookMineList.addEventListener("click", e => {
-  const parseBtn = e.target.closest("[data-parse-book]");
-  if (parseBtn) { parseBook(parseBtn.dataset.parseBook); return; }
+  // 暂时下架：原“识别”按钮点击逻辑
+  // const parseBtn = e.target.closest("[data-parse-book]");
+  // if (parseBtn) { parseBook(parseBtn.dataset.parseBook); return; }
   const btn = e.target.closest("[data-delete-book]");
   if (btn) deleteBook(btn.dataset.deleteBook);
 });
-bookMdList.addEventListener("click", e => {
-  const viewBtn = e.target.closest("[data-view-md]");
-  if (viewBtn) { showViewMenu(viewBtn, viewBtn.dataset.viewMd); return; }
-  const btn = e.target.closest("[data-delete-md]");
-  if (btn) deleteMarkdown(btn.dataset.deleteMd);
-});
+// 暂时下架：原“我的书籍（Markdown）”列表点击逻辑
+// bookMdList.addEventListener("click", e => {
+//   const viewBtn = e.target.closest("[data-view-md]");
+//   if (viewBtn) { showViewMenu(viewBtn, viewBtn.dataset.viewMd); return; }
+//   const btn = e.target.closest("[data-delete-md]");
+//   if (btn) deleteMarkdown(btn.dataset.deleteMd);
+// });
 bookDropZone.addEventListener("click", () => bookFileInput.click());
 bookDropZone.addEventListener("dragover", e => {
   e.preventDefault();
@@ -1433,10 +1441,11 @@ bookNameInput.addEventListener("keydown", e => {
 bookNameOverlay.addEventListener("click", e => {
   if (e.target === bookNameOverlay) hideNameDialog();
 });
-bookParseClose.addEventListener("click", () => { bookParseOverlay.hidden = true; });
-bookParseOverlay.addEventListener("click", e => {
-  if (e.target === bookParseOverlay) bookParseOverlay.hidden = true;
-});
+// 暂时下架：原“识别结果”弹窗关闭逻辑
+// bookParseClose.addEventListener("click", () => { bookParseOverlay.hidden = true; });
+// bookParseOverlay.addEventListener("click", e => {
+//   if (e.target === bookParseOverlay) bookParseOverlay.hidden = true;
+// });
 
 input.addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey) {

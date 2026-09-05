@@ -1127,7 +1127,7 @@ body {
 }
 .book-btn.downloading .dl-pct { position: relative; z-index: 1; font-weight: 600; }
 
-/* ---------- 我的书籍(Markdown):查看菜单 ---------- */
+/* ---------- 我的书籍(Markdown):查看菜单(暂时下架:识别功能下架后不再使用) ---------- */
 .view-menu {
   position: fixed;
   z-index: 1200;
@@ -1220,7 +1220,7 @@ body {
 .book-name-btn.primary:hover { background: var(--primary-hover); }
 .book-name-btn:disabled { opacity: .55; cursor: not-allowed; }
 
-/* ---------- 我的书籍:PDF 识别结果 ---------- */
+/* ---------- 我的书籍:PDF 识别结果(暂时下架:识别功能下架后不再使用) ---------- */
 .book-parse-modal {
   width: min(760px, 92vw);
   max-height: 86vh;

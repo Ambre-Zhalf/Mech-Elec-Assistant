@@ -1708,20 +1708,26 @@ def _bilibili_search_page(query, max_candidates=10):
     return []
 
 
-@register_tool
-def parse_pdf(filename, max_chars=12000):
-    """解析“我的书籍”中某本 PDF 的内容,用于大模型快速识别/总结书籍正文。
-    优先本地提取纯文本(不联网),扫描件/复杂排版走 MinerU 在线识别。
-    返回 {filename, text};text 为提取到的正文(可截断)。"""
-    from .pdf_extract import extract_pdf
+# 暂时下架:原“parse_pdf”(PDF 识别)工具,配合“利用本机 MinerU 扫描 PDF”功能下架
+# @register_tool
+# def parse_pdf(filename, max_chars=12000):
+#     """解析“我的书籍”中某本 PDF 的内容,用于大模型快速识别/总结书籍正文。
+#     优先本地提取纯文本(不联网),扫描件/复杂排版走 MinerU 在线识别。
+#     返回 {filename, text};text 为提取到的正文(可截断)。"""
+#     from .pdf_extract import extract_pdf
+#
+#     try:
+#         text = extract_pdf(filename)
+#     except FileNotFoundError as exc:
+#         return {"error": str(exc)}
+#     except Exception as exc:
+#         return {"error": f"{type(exc).__name__}: {exc}"}
+#     return {"filename": filename, "text": text[:max_chars]}
 
-    try:
-        text = extract_pdf(filename)
-    except FileNotFoundError as exc:
-        return {"error": str(exc)}
-    except Exception as exc:
-        return {"error": f"{type(exc).__name__}: {exc}"}
-    return {"filename": filename, "text": text[:max_chars]}
+
+def parse_pdf(filename, max_chars=12000):
+    """(暂时下架)PDF 识别工具已下架,不再对模型开放。"""
+    return {"error": "该功能已暂时下架"}
 
 
 def tools_spec():
@@ -1795,21 +1801,22 @@ def tools_spec():
                 },
             },
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "parse_pdf",
-                "description": "识别/解析“我的书籍”中某本 PDF 的正文。当用户让你总结、问答或快速识别某本已下载/上传到“我的书籍”的书籍时使用。返回该书的正文文本。若该书是扫描件或本地提取不到文本,会自动走 MinerU 在线识别。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "filename": {"type": "string", "description": "书名或文件名,如:高等数学 或 高等数学.pdf"},
-                        "max_chars": {"type": "integer", "description": "返回正文的最大字符数,默认 12000"},
-                    },
-                    "required": ["filename"],
-                },
-            },
-        },
+        # 暂时下架:原“parse_pdf”(PDF 识别)工具定义,配合“利用本机 MinerU 扫描 PDF”功能下架
+        # {
+        #     "type": "function",
+        #     "function": {
+        #         "name": "parse_pdf",
+        #         "description": "识别/解析“我的书籍”中某本 PDF 的正文。当用户让你总结、问答或快速识别某本已下载/上传到“我的书籍”的书籍时使用。返回该书的正文文本。若该书是扫描件或本地提取不到文本,会自动走 MinerU 在线识别。",
+        #         "parameters": {
+        #             "type": "object",
+        #             "properties": {
+        #                 "filename": {"type": "string", "description": "书名或文件名,如:高等数学 或 高等数学.pdf"},
+        #                 "max_chars": {"type": "integer", "description": "返回正文的最大字符数,默认 12000"},
+        #             },
+        #             "required": ["filename"],
+        #         },
+        #     },
+        # },
     ]
 
 
