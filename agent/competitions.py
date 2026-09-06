@@ -9,7 +9,8 @@ import json
 import os
 import threading
 
-_XLSX = os.environ.get("COMPETITION_XLSX", "D:/大学生工科竞赛榜单.xlsx")
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_XLSX = os.path.join(_BASE_DIR, "data", "gb", "大学生工科竞赛榜单.xlsx")
 _LINKS_JSON = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "competitions_links.json")
 _lock = threading.Lock()
 _cache = None
@@ -132,7 +133,7 @@ def recommend_competitions(major, job, top_n=8):
     try:
         items = _load()
     except RuntimeError:
-        return [{"name": "（竞赛知识库暂不可用，请检查 D:/大学生工科竞赛榜单.xlsx）", "category": ""}]
+        return [{"name": "（竞赛知识库暂不可用，请检查 " + _XLSX + "）", "category": ""}]
     text = (major or "") + " " + (job or "")
     dirs = [k for k in _DIRECTION_WORDS if k in text]
     user_cats = _categories_for(major, job)

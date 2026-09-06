@@ -4,6 +4,9 @@ requests>=2.32.0
 cryptography>=42.0.0
 playwright>=1.40.0
 bilibili-cli>=0.6.0
+# 竞赛知识库:读取《大学生工科竞赛榜单.xlsx》
+pandas>=2.0.0
+openpyxl>=3.1.0
 # 暂时下架:PDF 识别(利用本机 MinerU 扫描 PDF)已下架,以下依赖仅识别功能使用,恢复时取消注释即可
 # PDF 识别:本地纯文本抽取使用 pymupdf(模块名 fitz)
 # pymupdf>=1.24.0
