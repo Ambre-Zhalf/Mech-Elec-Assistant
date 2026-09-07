@@ -1259,11 +1259,14 @@ def _major_question(state, profile):
     major = profile.get("user_major") or "无"
     school = (state.get("school") or "").strip()
     degree = (state.get("degree") or profile.get("user_degree") or "").strip()
+    degree_type = (state.get("degree_type") or profile.get("user_degree_type") or "").strip()
+    # 命中职教口(含“专科/高职/大专”学历、“职业本科”类型,或专科院校名)时,推送《职业教育专业目录》。
+    # 说明:职业本科虽是本科层次,但其专业名称来自职业(专科)教育目录,故与专科共用同一目录。
     if degree:
-        voc = _is_voc_degree(degree)
+        voc = _is_voc_degree(degree) or ("职业本科" in degree or "职业本科" in degree_type)
     else:
-        # 学历还没填时,先按学校名判断(专科院校通常名称含“职业技术学院/职业学院…”)
-        voc = _is_voc_school(school)
+        # 学历还没填时,先按学校名判断(专科院校通常名称含“职业技术学院/职业学院…”),再看本科类型
+        voc = _is_voc_school(school) or ("职业本科" in degree_type)
     if voc:
         block = _majors_block_voc()
         hint = "这是教育部《职业教育专业目录（2021年）》及2025年增补清单中与机电相关的专科专业，请告诉我你的专业是什么？"

@@ -34,7 +34,8 @@ DEBUG_DIR = os.path.join(BASE_DIR, "data")
 READZN_ACCOUNT_URL = os.environ.get(
     "ZBOOK_SHARED_ACCOUNT_URL", "https://readzn.com/zlibrary-shared-account"
 ).rstrip("/")
-BOOK_BROWSER_CHANNEL = os.environ.get("BOOK_BROWSER_CHANNEL", "msedge").strip() or "msedge"
+_DEFAULT_BROWSER_CHANNEL = "msedge" if os.name == "nt" else "chromium"
+BOOK_BROWSER_CHANNEL = os.environ.get("BOOK_BROWSER_CHANNEL", _DEFAULT_BROWSER_CHANNEL).strip() or _DEFAULT_BROWSER_CHANNEL
 
 _MIRROR_CACHE = {"t": 0.0, "list": None}
 

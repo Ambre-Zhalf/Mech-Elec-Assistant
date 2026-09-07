@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -23,6 +24,9 @@ UA = (
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 SEARCH_ENGINE = os.environ.get("SEARCH_ENGINE", "baidu").lower()
+
+# 动态渲染/浏览器通道默认值:Windows 用系统 Edge,Linux 用 Playwright 自带 Chromium
+_DEFAULT_BROWSER_CHANNEL = "msedge" if os.name == "nt" else "chromium"
 
 
 def _headers(**extra):
@@ -361,10 +365,10 @@ def _brand_queries(company):
     brand = _brand_name(company)
     qs = []
     if len(brand) >= 2:
-        core = brand[:4]
-        for cand in (core, brand[:2]):
-            if cand and cand not in qs:
-                qs.append(cand)
+        qs.append(brand)  # 完整品牌(如“埃斯顿自动化”),避免截断到“埃斯顿自”错过官网
+        for extra in (brand[:4], brand[:2]):
+            if extra and extra != brand and extra not in qs:
+                qs.append(extra)
     qs.append(company)
     return qs
 
@@ -392,10 +396,8 @@ def _primary_search_with_brand(query, max_results=12):
                 seen.add(u)
                 out.append(it)
 
-    try:
-        add(web_search(query, max_results=max_results))
-    except Exception:
-        pass
+    # 若像公司全称/地区前缀,先搜“短品牌名 + 官网”更容易命中官网;
+    # 再补原词,避免“武汉/南京”这类城市前缀把官网结果挤到后面、被城市页淹没。
     if _companyish(query):
         company = _clean_company(query)
         for b in _brand_queries(company):
@@ -404,7 +406,11 @@ def _primary_search_with_brand(query, max_results=12):
             except Exception:
                 continue
             if len(out) >= max_results:
-                break
+                return out[:max_results]
+    try:
+        add(web_search(query, max_results=max_results))
+    except Exception:
+        pass
     return out or web_search(query, max_results=max_results)
 
 
@@ -826,11 +832,26 @@ def _quick_url_state(url, query, timeout=6, allow_browser=True, require_relevant
     return True, "可达但内容过少"
 
 
+def _verify_candidate_rank(item):
+    """越靠前越像“官网候选”:先排除信息型/聚合站,再排除政府/地图页,最后才是平台/名录/门户。
+
+    用于 _verify_results 抽样时优先挑真正官网,避免“前两条恰是城市/聚合页”导致整组误判失败。
+    """
+    url = (item.get("url") or "").lower()
+    host = _url_host(url)
+    base = _base_domain(host)
+    info = 2 if _is_not_official_site(url) else 0
+    geo = 1 if (host.endswith(".gov.cn") or "map.baidu.com" in host) else 0
+    low = 1 if _homepage_priority(base) else 0
+    return (info, geo, low)
+
+
 def _verify_results(query, results, sample=2, timeout=6):
     """对搜索结果做真实性初筛,返回 {ok, checked, pass_ratio, note}。"""
     if not results:
         return {"ok": False, "checked": [], "pass_ratio": 0.0, "note": "无结果"}
-    items = results[:sample]
+    # 优先挑“更像官网”的候选再探测,而非机械取前 2 条
+    items = sorted(results, key=_verify_candidate_rank)[:sample]
     # 并发探测各候选 URL,显著缩短“多家公司/多个链接串行校验”的耗时
     with ThreadPoolExecutor(max_workers=min(len(items), 3)) as ex:
         futs = [ex.submit(_quick_url_state, it.get("url", ""), query, timeout=timeout) for it in items]
@@ -1146,7 +1167,7 @@ def _render_dom_playwright(url, wait_ms=12000, timeout=50):
     except ImportError as exc:
         raise RuntimeError("未安装 Playwright,请先 pip install playwright") from exc
 
-    channel = os.environ.get("AGENT_BROWSER_CHANNEL", "msedge").strip() or "msedge"
+    channel = os.environ.get("AGENT_BROWSER_CHANNEL", _DEFAULT_BROWSER_CHANNEL).strip() or _DEFAULT_BROWSER_CHANNEL
     html = ""
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -1209,7 +1230,7 @@ def _render_dom_playwright_search(url, keyword, wait_ms=12000, timeout=50):
     except ImportError as exc:
         raise RuntimeError("未安装 Playwright,请先 pip install playwright") from exc
 
-    channel = os.environ.get("AGENT_BROWSER_CHANNEL", "msedge").strip() or "msedge"
+    channel = os.environ.get("AGENT_BROWSER_CHANNEL", _DEFAULT_BROWSER_CHANNEL).strip() or _DEFAULT_BROWSER_CHANNEL
     html = ""
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -1446,13 +1467,27 @@ def _collect_bilibili_links(query, max_candidates=6):
     return bvs
 
 
+def _find_bili():
+    """定位 bilibili-cli 的 `bili` 可执行文件:优先查 PATH,再回退到当前解释器同目录。
+
+    当 app 由 systemd/非激活方式启动、venv 的 bin/Scripts 未加入 PATH 时,`shutil.which`
+    找不到 `bili`;此时退而求其次,在当前解释器(sys.executable)所在目录找,即可覆盖绝大多数场景。
+    """
+    path = shutil.which("bili")
+    if path:
+        return path
+    exe = "bili.exe" if os.name == "nt" else "bili"
+    cand = os.path.join(os.path.dirname(sys.executable), exe)
+    return cand if os.path.isfile(cand) else None
+
+
 def _bilibili_search_cli(query, max_candidates=10, timeout=30):
     """用 bilibili-cli(官方 API,无需登录)搜索视频,返回 {title,url,view} 列表。
 
     bilibili-cli 内部走 B 站 Web 搜索 API,比抓取 search.bilibili.com 更稳定,
     能直接拿到播放量与 BV 号。命令不存在或失败时会抛错,由 bilibili_search 捕获回退。
     """
-    exe = shutil.which("bili")
+    exe = _find_bili()
     if not exe:
         raise RuntimeError("未安装 bilibili-cli,请先 pip install bilibili-cli")
     cmd = [exe, "search", query, "--type", "video", "--max", str(max_candidates), "--json"]
@@ -1578,7 +1613,7 @@ def _render_bilibili_search_pinia(search_url, wait_ms=12000, timeout=50):
     except ImportError as exc:
         raise RuntimeError("未安装 Playwright,请先 pip install playwright") from exc
 
-    channel = os.environ.get("AGENT_BROWSER_CHANNEL", "msedge").strip() or "msedge"
+    channel = os.environ.get("AGENT_BROWSER_CHANNEL", _DEFAULT_BROWSER_CHANNEL).strip() or _DEFAULT_BROWSER_CHANNEL
     pinia = ""
     with sync_playwright() as p:
         browser = p.chromium.launch(

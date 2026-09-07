@@ -83,7 +83,17 @@ body {
   transition: margin-left .2s ease, width .2s ease;
 }
 
-.app.sidebar-collapsed .sidebar { margin-left: -264px; width: 0; border-right: none; padding: 0; }
+/* 收起时不使用负 margin 偏移,以免 flex 行被拽离屏幕、把顶部“展开”按钮一起带走;仅把宽度压到 0 并裁剪内容 */
+.app.sidebar-collapsed .sidebar { width: 0; border-right: none; padding: 0; overflow: hidden; }
+
+/* 移动端侧边栏抽屉的遮罩(桌面端始终隐藏;窄屏由 .app.sidebar-open 控制) */
+.sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, .45);
+  z-index: 39;
+  display: none;
+}
 
 .sidebar-head { display: flex; flex-direction: column; gap: 10px; }
 
@@ -490,6 +500,9 @@ body {
 }
 .bubble th { background: rgba(255, 255, 255, .12); font-weight: 600; color: var(--bubble-text); }
 
+/* 回复中的表格(岗位表/学习计划表等)窄屏可横向滚动,避免撑破气泡 */
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
 /* 大模型气泡:黑字 + 中灰底,内部链接/代码/表格改为浅底深字,保证可读 */
 .msg.assistant .bubble a { color: #2f6bff; }
 .msg.assistant .bubble a:hover { color: #1f55c4; }
@@ -686,6 +699,9 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 移动端打开“图谱列表”面板的按钮(桌面端隐藏) */
+.kg-panel-toggle { display: none; }
 
 .kg-canvas {
   flex: 1;
@@ -1368,8 +1384,63 @@ body {
 }
 .enhance-error { font-size: 13px; color: #ef4444; margin-top: 6px; }
 
-@media (max-width: 720px) {
-  .sidebar { position: fixed; top: 0; bottom: 0; left: 0; z-index: 20; }
-  .app.sidebar-collapsed .sidebar { margin-left: -264px; }
-  .bubble { max-width: 92%; }
+/* ==================== 移动端 / 平板(竖屏)适配 ==================== */
+@media (max-width: 900px) {
+  /* 主容器用动态视口高度,避免手机浏览器工具栏/输入法遮挡;不支持 dvh 的浏览器仍回退到 100vh */
+  .app { height: 100vh; height: 100dvh; }
+
+  /* ---- 左侧边栏:桌面“折叠”改成可滑动抽屉 ---- */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 40;
+    width: min(288px, 82vw);
+    transform: translateX(-105%);
+    transition: transform .25s ease, width .2s ease;
+  }
+  .app.sidebar-open .sidebar {
+    transform: translateX(0);
+    box-shadow: 0 0 40px rgba(0, 0, 0, .18);
+  }
+  .app.sidebar-open .sidebar-backdrop { display: block; }
+
+  /* ---- 顶栏 ---- */
+  .topbar-title { font-size: 14px; }
+
+  /* ---- 对话区 ---- */
+  .chat { padding: 14px 12px 12px; }
+  .bubble { max-width: 94%; }
+  .welcome-card { padding: 22px 18px 20px; }
+  .welcome h2 { font-size: 21px; }
+  .welcome .intro-text { min-height: 0; }
+
+  /* ---- 底部输入区 ---- */
+  .composer { padding-bottom: env(safe-area-inset-bottom); }
+  .composer-hint { font-size: 10px; margin-top: 6px; }
+  .func-bar { flex-wrap: wrap; }
+  .mode-menu { min-width: 170px; }
+
+  /* ---- 知识图谱:图谱列表面板改成抽屉 ---- */
+  .kg-panel-toggle { display: inline-flex; }
+  .kg-sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 40;
+    width: min(300px, 84vw);
+    transform: translateX(-105%);
+    transition: transform .25s ease;
+    border-right: 1px solid var(--border);
+    box-shadow: 0 0 40px rgba(0, 0, 0, .18);
+  }
+  .app.kg-drawer-open .kg-sidebar { transform: translateX(0); }
+  .app.kg-drawer-open .sidebar-backdrop { display: block; }
+
+  /* ---- 图书弹窗 / 列表项 ---- */
+  .books-modal { width: min(860px, 96vw); }
+  .book-name-modal { width: min(420px, 92vw); }
+  .book-result-item, .book-mine-item { flex-wrap: wrap; }
 }

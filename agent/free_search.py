@@ -15,7 +15,13 @@ import os
 import subprocess
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_VENV_PY = os.path.join(_BASE_DIR, ".venv-search", "Scripts", "python.exe")
+_IS_WIN = os.name == "nt"
+# venv 的解释器/入口随系统不同:Windows 用 Scripts\python.exe,Linux/macOS 用 bin/python
+_VENV_PY = os.path.join(
+    _BASE_DIR, ".venv-search", "Scripts" if _IS_WIN else "bin",
+    "python.exe" if _IS_WIN else "python",
+)
+_VENV_PIP_CMD = ".venv-search\\Scripts\\pip" if _IS_WIN else ".venv-search/bin/pip"
 _DEFAULT_ENGINES = os.environ.get("FREE_SEARCH_ENGINES", "baidu,bing,duckduckgo").strip()
 
 # 传给 .venv-search 的解释器执行的胶水脚本:调用 aggregate_search 并把结果打印为 JSON。
@@ -74,7 +80,7 @@ def free_search(query, max_results=8, engines=None, timeout=50):
     if not _venv_available():
         raise RuntimeError(
             "free-search-mcp 未安装(缺少 .venv-search)。"
-            "请运行:python -m venv .venv-search && .venv-search\\Scripts\\pip install free-search-mcp"
+            "请运行:python -m venv .venv-search && " + _VENV_PIP_CMD + " install free-search-mcp"
         )
     engine_str = ",".join(e.strip() for e in (engines or _DEFAULT_ENGINES).split(",") if e.strip())
     cmd = [_VENV_PY, "-c", _RUNNER, query, str(int(max_results)), engine_str]

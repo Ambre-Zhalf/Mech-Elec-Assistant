@@ -9,6 +9,8 @@ const graphBackBtn = document.getElementById("graphBackBtn");
 const graphView = document.getElementById("graphView");
 const composer = document.querySelector(".composer");
 const appEl = document.querySelector(".app");
+const sidebarBackdrop = document.getElementById("sidebarBackdrop");
+const kgPanelToggle = document.getElementById("kgPanelToggle");
 const booksOverlay = document.getElementById("booksOverlay");
 const booksModalTitle = document.getElementById("booksModalTitle");
 const booksBackBtn = document.getElementById("booksBackBtn");
@@ -117,7 +119,7 @@ function toTable(rows) {
   const body = cells.slice(2);
   let html = "<table><thead><tr>" + head.map(c => "<th>" + c + "</th>").join("") + "</tr></thead><tbody>";
   html += body.map(r => "<tr>" + r.map(c => "<td>" + c + "</td>").join("") + "</tr>").join("");
-  return html + "</tbody></table>";
+  return '<div class="table-wrap">' + html + "</tbody></table></div>";
 }
 
 function renderMd(src) {
@@ -639,6 +641,7 @@ function showGraphView() {
 
 function closeGraphView() {
   graphMode = false;
+  appEl.classList.remove("kg-drawer-open");
   graphView.hidden = true;
   chat.style.display = "";
   composer.style.display = "";
@@ -749,6 +752,7 @@ async function deleteConversation(id) {
 }
 
 async function loadConversation(id) {
+  closeSidebarDrawer();
   sessionId = id;
   localStorage.setItem("session_id", sessionId);
   renderConvList();
@@ -780,6 +784,7 @@ function updateModeUI() {
 }
 
 function startNewChat() {
+  closeSidebarDrawer();
   sessionId = crypto.randomUUID();
   localStorage.setItem("session_id", sessionId);
   chatMode = "plan";
@@ -1457,9 +1462,52 @@ input.addEventListener("input", () => {
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 200) + "px";
 });
+// ---- 移动端适配:侧边栏抽屉 / 知识图谱列表面板抽屉 ----
+const isMobile = () => window.matchMedia("(max-width: 900px)").matches;
+
+function closeSidebarDrawer() {
+  if (isMobile()) appEl.classList.remove("sidebar-open");
+}
+
+function syncViewportMode() {
+  if (isMobile()) {
+    // 进入窄屏:去掉桌面折叠态,侧边栏抽屉默认收起
+    appEl.classList.remove("sidebar-collapsed");
+    appEl.classList.remove("sidebar-open");
+    appEl.classList.remove("kg-drawer-open");
+    sidebarToggle.title = "展开侧边栏";
+  } else {
+    // 回到宽屏:移除抽屉相关类,恢复桌面常驻侧边栏与图谱面板
+    appEl.classList.remove("sidebar-open");
+    appEl.classList.remove("kg-drawer-open");
+    sidebarToggle.title = appEl.classList.contains("sidebar-collapsed") ? "展开侧边栏" : "收起侧边栏";
+  }
+}
+
 sidebarToggle.addEventListener("click", () => {
-  appEl.classList.toggle("sidebar-collapsed");
+  if (isMobile()) {
+    const open = appEl.classList.toggle("sidebar-open");
+    sidebarToggle.title = open ? "收起侧边栏" : "展开侧边栏";
+  } else {
+    const collapsed = appEl.classList.toggle("sidebar-collapsed");
+    sidebarToggle.title = collapsed ? "展开侧边栏" : "收起侧边栏";
+  }
 });
+
+if (sidebarBackdrop) {
+  sidebarBackdrop.addEventListener("click", () => {
+    appEl.classList.remove("sidebar-open");
+    appEl.classList.remove("kg-drawer-open");
+  });
+}
+if (kgPanelToggle) {
+  kgPanelToggle.addEventListener("click", () => {
+    appEl.classList.toggle("kg-drawer-open");
+  });
+}
+
+window.addEventListener("resize", syncViewportMode);
+syncViewportMode();
 
 refreshConversations();
 showWelcome();

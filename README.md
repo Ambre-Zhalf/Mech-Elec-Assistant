@@ -26,6 +26,11 @@ pip install -r requirements.txt
 # 3. 启动
 python app.py
 
+# Linux/macOS 也可用一键脚本(Windows 用 start.bat):
+#   ./run.sh
+# 默认监听 127.0.0.1:8000;要对外访问再设:
+#   export HOST=0.0.0.0   # (可选) export PORT=8000
+
 # 4. 浏览器打开
 http://localhost:8000
 ```
@@ -117,13 +122,13 @@ mineru-models-download -m all
 | `TOOL_CAP_RENDER_PAGE` | 动态网页渲染次数上限 | `6` |
 | `TOOL_CAP_FIND_RECRUIT` | 招聘入口发现次数上限 | `3` |
 | `AGENT_BROWSER_PATH` | 无头浏览器路径(搜索用;想全程 Edge 可指向 Edge 的 msedge.exe) | 自动检测 |
-| `AGENT_BROWSER_CHANNEL` | Agent 动态渲染(Playwright)所用浏览器通道 | `msedge` |
+| `AGENT_BROWSER_CHANNEL` | Agent 动态渲染(Playwright)所用浏览器通道(自动按平台:Windows=msedge,Linux=chromium) | 自动(msedge/chromium) |
 | `ZBOOK_BASE_URL` | z-library 镜像站地址 | `https://zh.101k.by` |
 | `ZBOOK_INDEX_URL` | 镜像入口索引页 | `https://znew.pages.dev/` |
 | `ZBOOK_SHARED_ACCOUNT_URL` | 共享账号服务页(readzn) | `https://readzn.com/zlibrary-shared-account` |
 | `BOOK_SEARCH_MODEL` | 图书功能使用的模型名(预留) | `deepseek-v4-flash-vision-exp` |
 | `BOOK_TIMEOUT` | 图书抓取超时(秒) | `25` |
-| `BOOK_BROWSER_CHANNEL` | 图书下载用的浏览器通道(Playwright;`msedge` 或 `chrome`) | `msedge` |
+| `BOOK_BROWSER_CHANNEL` | 图书下载用的浏览器通道(Playwright;`msedge` 或 `chrome`;自动按平台) | 自动(msedge/chromium) |
 
 ## 数据存储
 

@@ -39,6 +39,13 @@ class ChatIn(BaseModel):
     mode: str = "plan"
 
 
+class RetryIn(BaseModel):
+    """一键重试请求体：仅需会话信息，无需新的用户消息(message)。"""
+    session_id: str = "default"
+    client_id: str = ""
+    mode: str = "plan"
+
+
 class ResetIn(BaseModel):
     session_id: str = "default"
 
@@ -140,7 +147,7 @@ def chat_stream(body: ChatIn):
 
 
 @app.post("/api/chat/retry")
-def chat_retry(body: ChatIn):
+def chat_retry(body: RetryIn):
     """一键重试:重新生成上一条助手回复(公司推荐/岗位检索等自动环节)。"""
     def gen():
         events = queue.Queue()
@@ -484,4 +491,9 @@ def reset(body: ResetIn):
 
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run(
+        "app:app",
+        host=os.environ.get("HOST", "127.0.0.1"),
+        port=int(os.environ.get("PORT", "8000")),
+        reload=False,
+    )
