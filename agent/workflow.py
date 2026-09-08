@@ -6,7 +6,6 @@ import re
 import time
 from datetime import datetime
 
-import requests
 
 from . import llm, store
 from .tools import tools_spec
@@ -1581,11 +1580,6 @@ def run(session_id, text, emit=None, stream=False, mode="plan"):
         store.reset_session(session_id)
         state = store.get_session(session_id) or {}
 
-    # 竞赛学习(闯关)模式 → 走独立工作流
-    if mode == "challenge":
-        _challenge_run(session_id, text, emit, stream)
-        return
-
     if any(k in text for k in CANCEL_WORDS) and state.get("step"):
         store.reset_session(session_id)
         _deliver(emit, session_id, "已取消当前规划流程。想重新开始的话,告诉我你的专业即可。", stream)
@@ -1679,17 +1673,24 @@ def _handle_qa(session_id, state, text, profile, emit, stream):
         state["step"] = "cert"
         store.set_session(session_id, state)
         cert_text = "\n".join(f"- **{c['name']}**: {c['why']}" for c in certs)
-        reply = (
+        # 消息一:四年学习计划 + 图书入口提示(整段红色,点击可打开“图书”功能)
+        part1 = (
             plan_text
-            + "\n\n**想提前学习某门课但是学校没有发课本？买书又太贵？请看左下角输入框上方的“图书”，在这里你可以查询到市面上绝大部分书籍，且支持PDF文件下载**\n"
-            + "\n\n---\n\n想进入一个好的公司，胜任一个重要的岗位，光靠理论知识可是不行的哦！"
-              "接下来由我来帮你点亮技能点，并为你推荐合适的竞赛，帮助你“以赛代练”，提高你的技术水平。\n\n"
+            + "\n\n[[OPEN_BOOKS]]想提前学习某门课但是学校没有发课本？买书又太贵？请看左下角输入框上方的“图书”，在这里你可以查询到市面上绝大部分书籍，且支持PDF文件下载。或者你也可以点击这段话，直接帮你打开“图书”功能[[/OPEN_BOOKS]]\n"
+        )
+        # 消息二:技能点亮/竞赛/证书,与“四年学习计划”分开弹框,并在消息一输出完后延时 3 秒再发送
+        part2 = (
+            "想进入一个好的公司，胜任一个重要的岗位，光靠理论知识可是不行的哦！"
+            "接下来由我来帮你点亮技能点，并为你推荐合适的竞赛，帮助你“以赛代练”，提高你的技术水平。\n\n"
             + "根据你的专业(**" + str(state.get("major")) + "**)和目标岗位(**" + str(state.get("job")) + "**),我建议你优先考这些证书:\n"
             + cert_text
             + "\n\n证书在精不在多，我给你推荐了几个最符合你专业和目标岗位的证书，或者你有自己的想法也可以自行选择想考的证书告诉我，我来帮你寻找学习课程。"
             + "\n\n<!--QUICK_OPTION:就按照你推荐的来|我要自行选择证书-->"
         )
-        _deliver(emit, session_id, reply, stream)
+        _deliver(emit, session_id, part1, stream)
+        emit("sep", {})   # 通知前端另起一个文本框
+        time.sleep(3)     # 消息一输出完后,等待 3 秒再发送第二部分
+        _deliver(emit, session_id, part2, stream)
         return
 
     if step == "cert":
@@ -1750,249 +1751,6 @@ def _handle_qa(session_id, state, text, profile, emit, stream):
     store.reset_session(session_id)
     _deliver(emit, session_id, "流程状态异常,已重置。请重新告诉我你的专业。", stream)
 
-
-# ---------------- 竞赛学习(闯关)模式 [方案B] ----------------
-
-CHALLENGE_COMPS = [
-    {"key": "工创赛", "full": "全国大学生工程实践与创新能力大赛", "pkg": "工创赛.zip"},
-    {"key": "成图大赛", "full": "全国大学生先进成图技术与产品信息建模创新大赛", "pkg": "成图大赛.zip"},
-    {"key": "机创赛", "full": "全国大学生机械创新设计大赛", "pkg": "机创赛.zip"},
-    {"key": "数字化设计赛", "full": "机械工程创新创意大赛·机械产品数字化设计赛", "pkg": "机械工程创新创意大赛-机械产品数字化设计赛.zip"},
-]
-
-_COMPETITION_KB_BASE = os.environ.get("COMPETITION_KB_BASE", "http://47.92.219.134:8888").rstrip("/")
-_ILAB_ACCOUNT = os.environ.get("ILAB_ACCOUNT", "")
-_ILAB_PASSWORD = os.environ.get("ILAB_PASSWORD", "")
-
-
-def _gb_files():
-    """本地竞赛知识库:data/gb 下的文件(国标/备赛指南)名称列表。"""
-    base = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "gb")
-    try:
-        return sorted(f for f in os.listdir(base) if os.path.isfile(os.path.join(base, f)))
-    except Exception:
-        return []
-
-
-def _server_files():
-    """远程竞赛知识库:47.92.219.134:8888(存储源1)资料包,返回 [(名称, 直链)]。"""
-    out = []
-    try:
-        resp = requests.post(
-            f"{_COMPETITION_KB_BASE}/api/storage/files",
-            json={"storageKey": "1", "path": "/", "password": "", "orderBy": "", "orderDirection": ""},
-            timeout=15,
-        )
-        data = resp.json().get("data", {}) or {}
-        for f in data.get("files", []):
-            name = f.get("name", "")
-            url = f.get("url", "")
-            if str(name).lower().endswith(".zip"):
-                out.append((name, url or ""))
-    except Exception:
-        pass
-    return out
-
-
-def _challenge_resources():
-    """把本地 gb + 远端资料包汇总成文本,供闯关导师引用。"""
-    parts = ["**本地国标/备赛资料(data/gb)**:\n" + "\n".join("- " + n for n in _gb_files())]
-    server = _server_files()
-    if server:
-        parts.append("**校内高速专线资料包(47.92.219.134:8888/1)**:")
-        for name, url in server:
-            parts.append(f"- {name}" + (f" → {url}" if url else ""))
-    return "\n".join(parts)
-
-
-def _challenge_components_block():
-    return "\n".join(f"- **{c['key']}**：{c['full']}" for c in CHALLENGE_COMPS)
-
-
-# 暂时下架:原提示词中的 parse_pdf(PDF 识别)工具已下架,不再告知模型可调用
-SYSTEM_CHALLENGE = """你是“机电岗课赛”自适应闯关导师，拥有10年一线车间经验的金牌实训导师，语言接地气、像车间师傅带徒弟，善用 Emoji。
-学生正在备战某个赛项或解决某个技术痛点，请结合学生档案、赛项、技术痛点、摸底应答与竞赛知识库，生成“理实一体”闯关路径。
-
-【严格按五步输出，绝不重复】
-第一步：学情诊断与定级——基于摸底答案判断短板（底层理论/软件工具/实战经验），给出接地气诊断评价。
-第二步：定制“理实一体”闯关路径——三关：
-- 🟢 第一关（破冰理论）：点出最关键 2~3 个理论点；
-- 🟡 第二关（玩虚拟）：推荐 iLab-x(https://www.ilab-x.com/list3)，给出免密公用账号与两步操作提示（账号密码：@@ILAB@@）；
-- 🔴 第三关（摸真机）：列出线下实操的绝对红线，必须标注 *（依据：GB/T XXXX 等国家标准）*，国标依据要真实；
-第三步：发放虚拟徽章，例如 `🎖️ 恭喜解锁 [初级机械大师] 徽章预备役！`。
-第四步：导师专属备赛福利——从竞赛知识库中给出对应赛项的资料包直链（点击下载）。
-第五步：结尾提示“资料及建议来自网络/知识库，请以官方最新通知为准”。
-
-【工具】可调用 verified_search / fetch_page / render_page / bilibili_search 检索真实工业实操微课并核验链接，严禁编造 BV 号与失效链接。
-【输出】只用 Markdown，分步清晰，不省略任何一步。"""
-
-
-SYSTEM_CHALLENGE_DIAG = """你是自适应学习导师。根据学生目标与痛点，现场出一道“1分钟学情摸底”诊断题。
-包含题干 + 三个选项 A/B/C，分别代表：A=底层理论/原理薄弱，B=软件工具/参数配置薄弱，C=实战应用/经验薄弱。
-只输出诊断题文本（含 A/B/C 选项），不要输出任何其他内容。"""
-
-
-SYSTEM_CHALLENGE_MENTOR = """你是“机电岗课赛”自适应闯关导师。学生刚刚收到一份专属闯关学习路径（目标赛项：@@COMP@@），现在正针对具体技术问题追问或表示没看懂。
-请结合上下文与竞赛知识库耐心解答；涉及理论或安全规范时，参考教材与国标资料，出处在正文标注（依据 GB/T 等）。语言口语化、像师傅带徒弟，善用 Emoji。"""
-
-
-def _challenge_diag_fallback(pain):
-    t = pain or "当前技术点"
-    return (
-        f"为了给你量身定制闯关路线，我们来做一个 **1 分钟学情摸底**：\n\n"
-        f"针对“**{t}**”，你目前最薄弱的是哪一环？\n\n"
-        "A. 底层理论/原理搞不清\n"
-        "B. 软件工具/参数配置不会调\n"
-        "C. 实操应用/排故经验不足\n\n"
-        "请回复 A / B / C。"
-    )
-
-
-def _challenge_diag_text(state):
-    chal = state.get("chal", {})
-    pain = chal.get("pain", "")
-    comp = (chal.get("comp") or {}).get("full", "")
-    try:
-        msg = llm.chat(
-            [
-                {"role": "system", "content": SYSTEM_CHALLENGE_DIAG},
-                {"role": "user", "content": f"学生目标:{comp or '未选赛项'}\n技术痛点:{pain or '未提供'}"},
-            ],
-            temperature=0.7,
-            max_tokens=384000,
-        )
-        return msg.get("content") or _challenge_diag_fallback(pain)
-    except Exception:
-        return _challenge_diag_fallback(pain)
-
-
-def _challenge_plan(session_id, state, profile, memories, emit, stream):
-    chal = state.get("chal", {})
-    comp = chal.get("comp") or {}
-    pain = chal.get("pain", "")
-    diag = chal.get("diag_answer", "")
-    ilab = f"账号:{_ILAB_ACCOUNT or '15207282873'} 密码:{_ILAB_PASSWORD or '123456@Ai'}"
-    system = SYSTEM_CHALLENGE.replace("@@ILAB@@", ilab)
-    user = (
-        f"学生档案:专业={profile.get('user_major') or '未提供'}；学校={profile.get('user_school') or '未提供'}；"
-        f"学历={profile.get('user_degree') or '未提供'}\n"
-        f"目标赛项:{comp.get('full','')}\n"
-        f"技术痛点:{pain or '未提供'}\n"
-        f"摸底应答:{diag or '未提供'}\n\n"
-        f"竞赛知识库:\n{_challenge_resources()}\n\n"
-        "请按系统指令输出五步闯关路径。"
-    )
-    text = llm.run_agent(
-        system,
-        user,
-        tools=AGENT_TOOLS,
-        max_steps=8,
-        max_tokens=384000,
-        on_process=lambda t: _emit_process(emit, t),
-        model=llm.MODEL,
-    )
-    state["step"] = "chal_qa"
-    store.set_session(session_id, state)
-    store.add_memory(session_id, "assistant", text)
-    _deliver(emit, session_id, text, stream)
-
-
-def _challenge_mentor(session_id, text, profile, memories, emit, stream):
-    chal = (store.get_session(session_id) or {}).get("chal", {})
-    comp = (chal.get("comp") or {}).get("full", "") or "机电实训"
-    system = SYSTEM_CHALLENGE_MENTOR.replace("@@COMP@@", comp)
-    try:
-        msg = llm.chat(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": text},
-            ],
-            temperature=0.7,
-            max_tokens=384000,
-        )
-        ans = msg.get("content") or ""
-    except Exception as exc:
-        ans = f"⚠️ 刚才解答失败({type(exc).__name__})，请再问一次，或换个说法。"
-    store.add_memory(session_id, "assistant", ans)
-    _deliver(emit, session_id, ans, stream)
-
-
-def _handle_challenge_select(session_id, state, text, emit, stream):
-    t = (text or "").strip()
-    comp = None
-    for c in CHALLENGE_COMPS:
-        if c["key"] in t or c["full"] in t:
-            comp = c
-            break
-    state["chal"] = state.get("chal") or {}
-    if comp:
-        state["chal"]["comp"] = comp
-        state["step"] = "chal_pain"
-        store.set_session(session_id, state)
-        _deliver(emit, session_id, f"好的，**{comp['full']}**！针对这个赛项，你目前最想解决的技术痛点/学习目标是什么？", stream)
-    else:
-        # 未命中赛项 → 视为直接输入痛点/目标
-        state["chal"]["pain"] = t
-        state["step"] = "chal_diag"
-        store.set_session(session_id, state)
-        _emit_process(emit, "正在为你做1分钟学情摸底")
-        _deliver(emit, session_id, _challenge_diag_text(state), stream)
-
-
-def _challenge_run(session_id, text, emit, stream):
-    if emit is None:
-        emit = lambda event, data: None
-    _think_start(session_id)
-    base_emit = emit
-    def emit(event, data):
-        if event == "process":
-            _think_push(session_id, (data or {}).get("text") or "")
-        base_emit(event, data)
-    state = store.get_session(session_id) or {}
-    step = state.get("step")
-    profile = store.get_profile(session_id)
-    memories = store.search_memory(session_id, text)
-
-    if any(k in text for k in CANCEL_WORDS) and step:
-        store.reset_session(session_id)
-        _deliver(emit, session_id, "已取消本次竞赛学习。想继续可重新开启。", stream)
-        return
-
-    if not step:
-        state = {"step": "chal_select", "chal": {}, "mode": "challenge"}
-        store.set_session(session_id, state)
-        msg = (
-            "👨‍🔧 **机电岗课赛·自适应闯关导师**上线！\n\n"
-            "直接告诉我你的**【学习目标 / 技术痛点】**，或选择一个赛项开启闯关：\n\n"
-            + _challenge_components_block()
-            + "\n\n💡 也可以直接输入，例如：\n- 我要备赛工创赛\n- 搞不懂 PLC 接线\n- 机器人标定不会"
-        )
-        _deliver(emit, session_id, msg, stream)
-        return
-
-    if step == "chal_select":
-        _handle_challenge_select(session_id, state, text, emit, stream)
-        return
-    if step == "chal_pain":
-        state["chal"]["pain"] = _confirm_value(text, "")
-        state["step"] = "chal_diag"
-        store.set_session(session_id, state)
-        _emit_process(emit, "正在为你做1分钟学情摸底")
-        _deliver(emit, session_id, _challenge_diag_text(state), stream)
-        return
-    if step == "chal_diag":
-        state.setdefault("chal", {})["diag_answer"] = text
-        state["step"] = "chal_plan"
-        store.set_session(session_id, state)
-        _emit_process(emit, "正在定制你的理实一体闯关路径")
-        _challenge_plan(session_id, state, profile, memories, emit, stream)
-        return
-    if step in ("chal_plan", "chal_qa"):
-        _challenge_mentor(session_id, text, profile, memories, emit, stream)
-        return
-
-    store.reset_session(session_id)
-    _deliver(emit, session_id, "竞赛学习状态异常，已重置。请重新输入你的学习目标或技术痛点。", stream)
 
 
 # ---------------- 一键重试:重新生成上一条助手回复 ----------------

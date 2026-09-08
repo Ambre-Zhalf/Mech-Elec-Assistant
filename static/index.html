@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>机电学习助手</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=27">
+  <link rel="stylesheet" href="/static/style.css?v=33">
 </head>
 <body>
   <div class="app">
@@ -40,6 +40,11 @@
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
         </button>
         <div class="topbar-title">机电学习助手</div>
+        <div class="topbar-right">
+          <span id="onlineCount" class="online-count" title="在线人数"></span>
+          <button id="recordsBtn" class="logout-btn" type="button" title="用户记录" hidden>📋 用户记录</button>
+          <button id="logoutBtn" class="logout-btn" type="button" title="退出登录" hidden>退出</button>
+        </div>
       </header>
 
       <main id="chat" class="chat">
@@ -200,6 +205,29 @@
     </div>
   </div>
 
+  <!-- 登录弹窗:首次进入输入昵称与密码 -->
+  <div id="loginOverlay" class="nickname-overlay">
+    <div class="nickname-modal">
+      <div class="nickname-title">欢迎使用机电学习助手</div>
+      <p class="nickname-desc">请输入昵称与密码登录（新昵称用默认密码即可注册）</p>
+      <input id="loginNickname" class="nickname-input" type="text" placeholder="请输入昵称" maxlength="24" autocomplete="off" />
+      <input id="loginPassword" class="nickname-input" type="password" placeholder="默认密码123" maxlength="64" autocomplete="off" />
+      <div id="loginMsg" class="login-msg" hidden></div>
+      <button id="loginOkBtn" class="nickname-btn" type="button">登录</button>
+    </div>
+  </div>
+
+  <!-- 管理员:用户记录弹窗 -->
+  <div id="adminRecordsOverlay" class="nickname-overlay" hidden>
+    <div class="admin-modal">
+      <div class="admin-head">
+        <span class="admin-title">用户记录</span>
+        <button type="button" class="admin-close" id="adminCloseBtn" title="关闭">×</button>
+      </div>
+      <div class="admin-records" id="adminRecordsList"><div class="admin-empty">加载中…</div></div>
+    </div>
+  </div>
+
   <script src="/static/vendor/d3.min.js?v=3"></script>
   <script src="/static/graph.js?v=3"></script>
   <script>
@@ -211,6 +239,6 @@
   </script>
   <script src="/static/vendor/tex-svg.js"></script>
   <script src="/static/vendor/marked.min.js"></script>
-  <script src="/static/app.js?v=27"></script>
+  <script src="/static/app.js?v=33"></script>
 </body>
 </html>

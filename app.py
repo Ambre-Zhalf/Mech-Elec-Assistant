@@ -3,7 +3,9 @@
 import json
 import os
 import queue
+import re
 import threading
+import time
 import traceback
 
 from fastapi import FastAPI, Request
@@ -30,6 +32,22 @@ async def no_cache_static(request, call_next):
     if request.url.path == "/" or request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache"
     return response
+
+
+# ---------- 在线人数(进程内内存版:单进程部署即可,无需加库/服务) ----------
+_presence_lock = threading.Lock()
+_presence = {}  # client_id -> {"nick": str, "last_seen": float}
+PRESENCE_WINDOW = 35.0  # 秒:超过该时间无心跳视为离线
+
+
+def _presence_count():
+    """返回窗口内的去重在线人数,并顺带清理过期记录。"""
+    now = time.time()
+    with _presence_lock:
+        stale = [k for k, v in _presence.items() if now - (v.get("last_seen") or 0) > PRESENCE_WINDOW]
+        for k in stale:
+            _presence.pop(k, None)
+        return len(_presence)
 
 
 class ChatIn(BaseModel):
@@ -80,6 +98,23 @@ class BookDownloadIn(BaseModel):
 class AnspireSearchIn(BaseModel):
     query: str
     top_k: int = 10
+
+
+class PresencePingIn(BaseModel):
+    """在线心跳请求体：携带客户端标识与昵称。"""
+    client_id: str = ""
+    nickname: str = ""
+
+
+class LoginIn(BaseModel):
+    """登录/首次注册请求体。"""
+    client_id: str = ""
+    nickname: str = ""
+    password: str = ""
+
+
+class LogoutIn(BaseModel):
+    token: str = ""
 
 
 # 暂时下架:原“PDF 识别”请求体,配合已下架的 /api/pdf/parse 使用
@@ -488,6 +523,89 @@ def delete_session(session_id: str, client_id: str = ""):
 def reset(body: ResetIn):
     store.reset_session(body.session_id)
     return {"ok": True}
+
+
+# ---------- 在线人数 ----------
+
+@app.post("/api/presence/ping")
+def presence_ping(body: PresencePingIn):
+    """前端按时上报心跳,用于统计在线人数。"""
+    cid = (body.client_id or "").strip()
+    if cid:
+        with _presence_lock:
+            _presence[cid] = {
+                "nick": (body.nickname or "").strip(),
+                "last_seen": time.time(),
+            }
+    return {"ok": True, "online": _presence_count()}
+
+
+@app.get("/api/presence/online")
+def presence_online():
+    """返回近窗口内的在线人数。"""
+    return {"ok": True, "online": _presence_count()}
+
+
+# ---------- 登录 / 用户体系 ----------
+
+def _clean_nickname(s):
+    s = re.sub(r"[\u0000-\u001f\u007f]", "", (s or ""))
+    s = re.sub(r"\s+", " ", s).strip()
+    return s[:24]
+
+
+@app.post("/api/auth/login")
+def auth_login(body: LoginIn):
+    """登录;昵称不存在且密码为标准密码(用户默认密码)时自动注册。"""
+    nickname = _clean_nickname(body.nickname)
+    password = (body.password or "")
+    client_id = (body.client_id or "").strip()
+    if not nickname or not password:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "昵称和密码不能为空"})
+    default_pw = os.environ.get("USER_DEFAULT_PASSWORD", "123")
+    user = store.get_user(nickname)
+    if user:
+        stored = store.get_user_hash(nickname)  # 获取存储哈希
+        if not store.verify_password(password, stored):
+            return JSONResponse(status_code=401, content={"ok": False, "error": "昵称已存在，密码错误"})
+        role = user["role"]
+    else:
+        # 新用户仅允许使用标准密码注册(admin 由种子账号保留)
+        if password != default_pw:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "新用户请使用默认密码注册"})
+        store.create_user(nickname, password, role="user")
+        role = "user"
+    store.bind_user_client(nickname, client_id)
+    token = store.create_auth_token(nickname)
+    return {"ok": True, "nickname": nickname, "role": role, "token": token}
+
+
+@app.post("/api/auth/logout")
+def auth_logout(body: LogoutIn):
+    store.delete_auth_token(body.token or "")
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def auth_me(token: str = ""):
+    """校验本地有效期内的 token,返回当前登录身份;用于刷新页面后免登录。"""
+    nickname = store.get_auth_user(token or "")
+    if not nickname:
+        return JSONResponse(status_code=401, content={"ok": False, "error": "未登录或已过期"})
+    user = store.get_user(nickname)
+    return {"ok": True, "nickname": nickname, "role": (user or {}).get("role", "user")}
+
+
+@app.get("/api/admin/records")
+def admin_records(token: str = ""):
+    """管理员专属:查看全部用户的提问与 AI 回复记录。"""
+    nickname = store.get_auth_user(token or "")
+    if not nickname:
+        return JSONResponse(status_code=401, content={"ok": False, "error": "未登录或登录已过期"})
+    user = store.get_user(nickname)
+    if not user or user["role"] != "admin":
+        return JSONResponse(status_code=403, content={"ok": False, "error": "无管理员权限"})
+    return {"ok": True, "records": store.get_all_user_records()}
 
 
 if __name__ == "__main__":

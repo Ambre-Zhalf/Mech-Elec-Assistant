@@ -11,6 +11,17 @@ const composer = document.querySelector(".composer");
 const appEl = document.querySelector(".app");
 const sidebarBackdrop = document.getElementById("sidebarBackdrop");
 const kgPanelToggle = document.getElementById("kgPanelToggle");
+const onlineCount = document.getElementById("onlineCount");
+const logoutBtn = document.getElementById("logoutBtn");
+const recordsBtn = document.getElementById("recordsBtn");
+const loginOverlay = document.getElementById("loginOverlay");
+const loginNickname = document.getElementById("loginNickname");
+const loginPassword = document.getElementById("loginPassword");
+const loginOkBtn = document.getElementById("loginOkBtn");
+const loginMsg = document.getElementById("loginMsg");
+const adminRecordsOverlay = document.getElementById("adminRecordsOverlay");
+const adminCloseBtn = document.getElementById("adminCloseBtn");
+const adminRecordsList = document.getElementById("adminRecordsList");
 const booksOverlay = document.getElementById("booksOverlay");
 const booksModalTitle = document.getElementById("booksModalTitle");
 const booksBackBtn = document.getElementById("booksBackBtn");
@@ -179,6 +190,10 @@ function renderMd(src) {
         html += '<div class="quick-options">' + opts.map(o =>
           '<button type="button" class="quick-option" data-opt="' + o.replace(/"/g, "&quot;") + '">' + inlineMd(o) + '</button>'
         ).join("") + '</div>';
+      } else if (l.startsWith("[[OPEN_BOOKS]]") && l.endsWith("[[/OPEN_BOOKS]]")) {
+        closeList();
+        const inner = l.slice("[[OPEN_BOOKS]]".length, -"[[/OPEN_BOOKS]]".length).trim();
+        html += '<button type="button" class="books-cta">' + inlineMd(inner) + "</button>";
       } else if (l === "---" || l === "") {
         closeList();
         if (l === "---") html += "<hr style='border:none;border-top:1px solid var(--border);margin:10px 0'>";
@@ -373,7 +388,7 @@ function attachEnhanceSearch(bubble, text) {
   bubble.appendChild(buildEnhanceRow());
 }
 
-const INTRO_TEXT = "我是机电学习助手，专注于机电专业的学生规划大学四年的学习，助力他们在大学毕业之际能取得心仪的offer。我有“规划”和“竞赛学习”两种模式，默认为“规划模式”，先对你的基本信息“摸个底”，点击下方的“开始”按钮即可体验。";
+const INTRO_TEXT = "我是机电学习助手，深耕机电专业学业规划，帮你理清学习方向，毕业拿下心仪 offer。我有“规划”和“竞赛学习”两种模式，默认为“规划模式”，先对你的基本信息“摸个底”，点击下方的“开始”按钮即可体验。";
 let introTimer = null;
 let introIntv = null;
 
@@ -506,6 +521,16 @@ function handleSse(rawEvent, ctx) {
     collapseThink(ctx.node);
     ctx.raw += payload.delta || "";
     ctx.node.bubble.innerHTML = renderMd(ctx.raw);
+    scrollToBottom();
+  } else if (event === "sep") {
+    // 分段消息:结束当前气泡,另起一个新的助手文本框
+    collapseThink(ctx.node);
+    const dot = ctx.node.head.querySelector(".dot");
+    if (dot) dot.style.display = "none";
+    const node = createStreamNode(chatMode);
+    setupThinkToggle(node);
+    ctx.node = node;
+    ctx.raw = "";
     scrollToBottom();
   } else if (event === "done") {
     ctx.node.head.querySelector(".dot").style.display = "none";
@@ -803,7 +828,13 @@ modeBtn.addEventListener("click", (e) => {
 modeMenu.addEventListener("click", (e) => {
   const opt = e.target.closest(".mode-option");
   if (opt) {
-    chatMode = opt.dataset.mode || "plan";
+    const chosen = opt.dataset.mode || "plan";
+    if (chosen === "challenge") {
+      // 竞赛学习已迁移到外部站点:点击“竞赛学习模式”直接跳转
+      window.location.href = "https://47.92.219.134:7788/";
+      return;
+    }
+    chatMode = chosen;
     updateModeUI();
     modeMenu.hidden = true;
   }
@@ -824,6 +855,8 @@ convList.addEventListener("click", e => {
   }
 });
 chat.addEventListener("click", e => {
+  const cta = e.target.closest(".books-cta");
+  if (cta) { openBooks(); return; }
   const btn = e.target.closest(".graph-import-btn");
   if (btn) importGraph(b64decodeUtf8(btn.dataset.graph), btn);
   const qbtn = e.target.closest(".quick-option");
@@ -1509,9 +1542,210 @@ if (kgPanelToggle) {
 window.addEventListener("resize", syncViewportMode);
 syncViewportMode();
 
+// ---------- 登录 + 在线人数(轮询) ----------
+let nickname = localStorage.getItem("auth_nickname") || "";
+let authRole = localStorage.getItem("auth_role") || "";
+let authToken = localStorage.getItem("auth_token") || "";
+
+function cleanNickname(s) {
+  return (s || "")
+    .replace(/[\u0000-\u001f\u007f]/g, "")  // 去掉控制字符
+    .replace(/\s+/g, " ")                    // 合并连续空白
+    .trim()
+    .slice(0, 24);
+}
+
+function setLoginMsg(text) {
+  if (!loginMsg) return;
+  loginMsg.hidden = !text;
+  loginMsg.textContent = text || "";
+}
+
+async function loginSubmit() {
+  const nick = cleanNickname(loginNickname.value);
+  const pwd = loginPassword.value;
+  if (!nick || !pwd) { setLoginMsg("昵称和密码不能为空"); return; }
+  loginOkBtn.disabled = true;
+  setLoginMsg("");
+  try {
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_id: clientId, nickname: nick, password: pwd }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || "登录失败");
+    nickname = data.nickname;
+    authRole = data.role || "user";
+    authToken = data.token || "";
+    localStorage.setItem("auth_nickname", nickname);
+    localStorage.setItem("auth_role", authRole);
+    localStorage.setItem("auth_token", authToken);
+    loginOverlay.hidden = true;
+    loginPassword.value = "";
+    input.focus();
+    startPresenceLoop();
+    if (logoutBtn) logoutBtn.hidden = false;
+    if (recordsBtn) recordsBtn.hidden = (authRole !== "admin");
+    if (authRole === "admin") openAdminRecords();
+  } catch (e) {
+    setLoginMsg(e.message || "登录失败");
+  } finally {
+    loginOkBtn.disabled = false;
+  }
+}
+
+function showLoginGate() {
+  setLoginMsg("");
+  loginPassword.value = "";
+  loginOverlay.hidden = false;
+  loginNickname.focus();
+}
+
+async function logoutSubmit() {
+  const token = authToken;
+  nickname = ""; authRole = ""; authToken = "";
+  localStorage.removeItem("auth_nickname");
+  localStorage.removeItem("auth_role");
+  localStorage.removeItem("auth_token");
+  if (token) {
+    fetch("/api/auth/logout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    }).catch(() => {});
+  }
+  if (presenceTimer) { clearInterval(presenceTimer); presenceTimer = null; }
+  if (logoutBtn) logoutBtn.hidden = true;
+  if (recordsBtn) recordsBtn.hidden = true;
+  if (onlineCount) onlineCount.textContent = "";
+  closeAdminRecords();
+  input.value = "";
+  showWelcome();
+  refreshConversations();
+  showLoginGate();
+}
+
+async function presenceTick() {
+  try {
+    await fetch("/api/presence/ping", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_id: clientId, nickname }),
+    });
+    const res = await fetch("/api/presence/online");
+    const data = await res.json().catch(() => ({}));
+    if (onlineCount) onlineCount.textContent = "在线 " + (data.online || 0);
+  } catch (e) { /* 网络/服务异常时忽略,下一轮再试 */ }
+}
+
+let presenceTimer = null;
+function startPresenceLoop() {
+  if (presenceTimer) return;
+  presenceTick();
+  presenceTimer = setInterval(presenceTick, 10000);
+}
+
+async function initLogin() {
+  if (authToken) {
+    try {
+      const res = await fetch("/api/auth/me?token=" + encodeURIComponent(authToken));
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        nickname = data.nickname;
+        authRole = data.role || "user";
+        localStorage.setItem("auth_nickname", nickname);
+        localStorage.setItem("auth_role", authRole);
+        loginOverlay.hidden = true;
+        if (logoutBtn) logoutBtn.hidden = false;
+        if (recordsBtn) recordsBtn.hidden = (authRole !== "admin");
+        startPresenceLoop();
+        return;
+      }
+    } catch (e) {}
+    authToken = ""; nickname = ""; authRole = "";
+    localStorage.removeItem("auth_nickname");
+    localStorage.removeItem("auth_role");
+    localStorage.removeItem("auth_token");
+  }
+  showLoginGate();
+}
+
+// ---------- 管理员:用户记录 ----------
+async function openAdminRecords() {
+  if (!adminRecordsOverlay) return;
+  adminRecordsOverlay.hidden = false;
+  adminRecordsList.innerHTML = '<div class="admin-empty">加载中…</div>';
+  try {
+    const res = await fetch("/api/admin/records?token=" + encodeURIComponent(authToken));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      adminRecordsList.innerHTML = '<div class="admin-empty">⚠️ ' + escapeHtml(data.error || "加载失败") + "</div>";
+      return;
+    }
+    renderAdminRecords(data.records || []);
+  } catch (e) {
+    adminRecordsList.innerHTML = '<div class="admin-empty">⚠️ ' + escapeHtml(e.message || "加载失败") + "</div>";
+  }
+}
+
+function closeAdminRecords() {
+  if (adminRecordsOverlay) adminRecordsOverlay.hidden = true;
+}
+
+function fmtAdminTime(t) {
+  if (!t) return "";
+  const d = new Date(String(t).replace(" ", "T"));
+  if (isNaN(d.getTime())) return String(t).slice(5, 16);
+  return (d.getMonth() + 1) + "/" + d.getDate() + " " +
+    String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+}
+
+function renderAdminRecords(records) {
+  if (!records || !records.length) {
+    adminRecordsList.innerHTML = '<div class="admin-empty">暂无用户记录</div>';
+    return;
+  }
+  adminRecordsList.innerHTML = records.map(u => {
+    const msgs = (u.messages || []).map(m => {
+      const role = m.role === "user" ? "提问" : "回复";
+      return '<div class="admin-msg ' + escapeHtml(m.role) + '">' +
+        '<span class="admin-role">' + role + '</span>' +
+        '<span class="admin-content">' + escapeHtml(m.content || "") + '</span>' +
+        '<span class="admin-time">' + escapeHtml(fmtAdminTime(m.time)) + '</span>' +
+      '</div>';
+    }).join("");
+    const badge = u.role === "admin" ? '<span class="admin-badge admin">管理员</span>' : "";
+    return '<div class="admin-user">' +
+      '<div class="admin-user-head"><span>' + escapeHtml(u.nickname || "") + '</span>' + badge +
+        '<span class="admin-cnt">' + (u.messages || []).length + ' 条</span>' +
+        '<button type="button" class="admin-toggle">展开</button></div>' +
+      '<div class="admin-user-body" hidden>' + msgs + '</div></div>';
+  }).join("");
+}
+
+if (loginOkBtn) loginOkBtn.addEventListener("click", loginSubmit);
+if (loginPassword) loginPassword.addEventListener("keydown", e => { if (e.key === "Enter") loginSubmit(); });
+if (loginNickname) loginNickname.addEventListener("keydown", e => { if (e.key === "Enter") loginPassword.focus(); });
+if (logoutBtn) logoutBtn.addEventListener("click", logoutSubmit);
+if (recordsBtn) recordsBtn.addEventListener("click", openAdminRecords);
+if (adminCloseBtn) adminCloseBtn.addEventListener("click", closeAdminRecords);
+if (adminRecordsOverlay) adminRecordsOverlay.addEventListener("click", e => { if (e.target === adminRecordsOverlay) closeAdminRecords(); });
+if (adminRecordsList) adminRecordsList.addEventListener("click", e => {
+  const btn = e.target.closest(".admin-toggle");
+  if (!btn) return;
+  const user = btn.closest(".admin-user");
+  if (!user) return;
+  const body = user.querySelector(".admin-user-body");
+  if (!body) return;
+  body.hidden = !body.hidden;
+  btn.textContent = body.hidden ? "展开" : "收起";
+});
+
 refreshConversations();
 showWelcome();
 input.focus();
+initLogin();
 
 // 支持 #graph 直达知识图谱视图
 if (location.hash === "#graph") showGraphView();

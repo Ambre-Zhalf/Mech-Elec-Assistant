@@ -3,8 +3,11 @@
 import json
 import os
 import re
+import hashlib
+import hmac
+import secrets
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -86,6 +89,36 @@ def _init(conn):
         conn.execute("ALTER TABLE messages ADD COLUMN think TEXT")
     if "think_time" not in mcols:
         conn.execute("ALTER TABLE messages ADD COLUMN think_time REAL")
+    # 登录/用户体系(首次运行自动建表,幂等)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users(
+            nickname TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user',
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_clients(
+            nickname TEXT NOT NULL,
+            client_id TEXT NOT NULL,
+            PRIMARY KEY(nickname, client_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS auth_tokens(
+            token TEXT PRIMARY KEY,
+            nickname TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            expires_at TEXT NOT NULL
+        )
+        """
+    )
     conn.commit()
 
 
@@ -318,3 +351,182 @@ def get_messages(session_id):
         }
         for r in rows
     ]
+
+
+# ---------- 登录/用户体系 ----------
+
+def _hash_password(pwd, salt=None):
+    """返回 'salt$hash'(PBKDF2-SHA256),避免明文存储。"""
+    salt = salt or secrets.token_hex(16)
+    hashed = hashlib.pbkdf2_hmac(
+        "sha256", (pwd or "").encode("utf-8"), salt.encode("utf-8"), 100_000
+    ).hex()
+    return f"{salt}${hashed}"
+
+
+def verify_password(pwd, stored):
+    """校验明文密码与存储的 'salt$hash' 是否匹配。"""
+    try:
+        salt, hashed = (stored or "").split("$", 1)
+    except ValueError:
+        return False
+    return hmac.compare_digest(_hash_password(pwd, salt).split("$", 1)[1], hashed)
+
+
+def get_user(nickname):
+    conn = _conn()
+    row = conn.execute(
+        "SELECT nickname, role FROM users WHERE nickname=?", (nickname,)
+    ).fetchone()
+    conn.close()
+    return {"nickname": row["nickname"], "role": row["role"]} if row else None
+
+
+def get_user_hash(nickname):
+    """返回该昵称的密码哈希(salt$hash),不存在返回 None。"""
+    conn = _conn()
+    row = conn.execute(
+        "SELECT password_hash FROM users WHERE nickname=?", (nickname,)
+    ).fetchone()
+    conn.close()
+    return row["password_hash"] if row else None
+
+
+def create_user(nickname, password, role="user"):
+    conn = _conn()
+    conn.execute(
+        "INSERT INTO users(nickname, password_hash, role) VALUES(?, ?, ?)",
+        (nickname, _hash_password(password), role),
+    )
+    conn.commit()
+    conn.close()
+
+
+def bind_user_client(nickname, client_id):
+    """把某个浏览器(client_id)绑定到该昵称,用于管理员跨设备汇总记录。"""
+    if not nickname or not client_id:
+        return
+    conn = _conn()
+    conn.execute(
+        "INSERT OR IGNORE INTO user_clients(nickname, client_id) VALUES(?, ?)",
+        (nickname, client_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_user_clients(nickname):
+    conn = _conn()
+    rows = conn.execute(
+        "SELECT client_id FROM user_clients WHERE nickname=?", (nickname,)
+    ).fetchall()
+    conn.close()
+    return [r["client_id"] for r in rows]
+
+
+def create_auth_token(nickname):
+    token = secrets.token_urlsafe(32)
+    expires = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    conn = _conn()
+    conn.execute(
+        "INSERT INTO auth_tokens(token, nickname, expires_at) VALUES(?, ?, ?)",
+        (token, nickname, expires),
+    )
+    conn.commit()
+    conn.close()
+    return token
+
+
+def get_auth_user(token):
+    """返回有效且未过期的 token 对应的昵称;无效返回 None。"""
+    if not token:
+        return None
+    conn = _conn()
+    row = conn.execute(
+        "SELECT nickname, expires_at FROM auth_tokens WHERE token=?", (token,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return row["nickname"] if row["expires_at"] >= now else None
+
+
+def delete_auth_token(token):
+    if not token:
+        return
+    conn = _conn()
+    conn.execute("DELETE FROM auth_tokens WHERE token=?", (token,))
+    conn.commit()
+    conn.close()
+
+
+def get_all_user_records():
+    """按昵称聚合每个用户在“绑定设备”下的全部问答记录,按时间升序。"""
+    conn = _conn()
+    users = conn.execute(
+        "SELECT nickname, role FROM users ORDER BY created_at DESC"
+    ).fetchall()
+    result = []
+    for u in users:
+        clients = [
+            r["client_id"]
+            for r in conn.execute(
+                "SELECT client_id FROM user_clients WHERE nickname=?", (u["nickname"],)
+            ).fetchall()
+        ]
+        if not clients:
+            continue
+        placeholders = ",".join("?" * len(clients))
+        sessions = [
+            r["session_id"]
+            for r in conn.execute(
+                f"SELECT session_id FROM conversations WHERE client_id IN ({placeholders})",
+                clients,
+            ).fetchall()
+        ]
+        if not sessions:
+            continue
+        sp = ",".join("?" * len(sessions))
+        msgs = conn.execute(
+            f"SELECT role, content, created_at FROM messages "
+            f"WHERE session_id IN ({sp}) ORDER BY id ASC",
+            sessions,
+        ).fetchall()
+        result.append(
+            {
+                "nickname": u["nickname"],
+                "role": u["role"],
+                "messages": [
+                    {"role": m["role"], "content": m["content"], "time": m["created_at"]}
+                    for m in msgs
+                ],
+            }
+        )
+    conn.close()
+    return result
+
+
+def _ensure_admin():
+    """创建/更新管理员账号(密码取 .env 的 ADMIN_PASSWORD,缺省为 lvdiantuandui)。"""
+    admin_pw = os.environ.get("ADMIN_PASSWORD", "lvdiantuandui")
+    conn = _conn()  # 幂等建表
+    row = conn.execute(
+        "SELECT password_hash FROM users WHERE nickname='admin'"
+    ).fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO users(nickname, password_hash, role) VALUES('admin', ?, 'admin')",
+            (_hash_password(admin_pw),),
+        )
+    elif os.environ.get("ADMIN_PASSWORD") and not verify_password(admin_pw, row["password_hash"]):
+        # 配置了 ADMIN_PASSWORD 则以它为准,更新到最新
+        conn.execute(
+            "UPDATE users SET password_hash=? WHERE nickname='admin'",
+            (_hash_password(admin_pw),),
+        )
+    conn.commit()
+    conn.close()
+
+
+_ensure_admin()
