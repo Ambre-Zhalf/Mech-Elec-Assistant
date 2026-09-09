@@ -544,10 +544,10 @@
       createNewGraph();
     });
     el.graphList.addEventListener("click", onGraphListClick);
-    el.importHistory.addEventListener("click", function (e) {
-      var btn = e.target.closest("[data-remove-import]");
-      if (btn) removeImport(btn.getAttribute("data-remove-import"));
-    });
+  el.importHistory.addEventListener("click", function (e) {
+    var btn = e.target.closest("[data-remove-import]");
+    if (btn) undoImport(btn.getAttribute("data-remove-import"));
+  });
 
     // 自适应
     if (typeof ResizeObserver !== "undefined") {
@@ -614,7 +614,7 @@
     });
   }
 
-  function removeImport(importId) {
+  function undoImport(importId) {
     if (!currentGraphId) return;
     if (!confirm("撤销该次导入吗?")) return;
     removeImport(currentGraphId, importId).then(function () {

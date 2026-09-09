@@ -365,11 +365,12 @@ def _brand_queries(company):
     brand = _brand_name(company)
     qs = []
     if len(brand) >= 2:
-        qs.append(brand)  # 完整品牌(如“埃斯顿自动化”),避免截断到“埃斯顿自”错过官网
+        qs.append('"%s"' % brand)  # 完整品牌(如“埃斯顿自动化”),加引号做精确短语
         for extra in (brand[:4], brand[:2]):
-            if extra and extra != brand and extra not in qs:
-                qs.append(extra)
-    qs.append(company)
+            q = '"%s"' % extra
+            if extra and extra != brand and q not in qs:
+                qs.append(q)
+    qs.append('"%s"' % company)
     return qs
 
 
@@ -407,11 +408,12 @@ def _primary_search_with_brand(query, max_results=12):
                 continue
             if len(out) >= max_results:
                 return out[:max_results]
+    exact = ('"%s" 官网' % _clean_company(query)) if _companyish(query) else query
     try:
-        add(web_search(query, max_results=max_results))
+        add(web_search(exact, max_results=max_results))
     except Exception:
         pass
-    return out or web_search(query, max_results=max_results)
+    return out or web_search(exact, max_results=max_results)
 
 
 _HOMEPAGE_CACHE = {}
@@ -1017,7 +1019,17 @@ def verified_search(query, max_results=12):
         trace.append({"stage": "web_search", "count": len(primary), "pass": v["ok"], "detail": v.get("note", "")})
         if v["ok"]:
             return _pack_results(primary, "web_search", v, trace, verified=True)
-        # 主搜有结果但初筛未全过:直接返回并标记未通过,只让模型对“关键子项”单独重搜,不再整组走回退链
+        # 主搜有结果但初筛未全过:不立即丢弃,先尝试 free-search-mcp 多引擎回退,避免被单一引擎切词带偏
+        try:
+            alt = free_search(query, max_results=max_results)
+            v2 = _verify_results(query, alt)
+            trace.append({"stage": "free_search_mcp", "count": len(alt), "pass": v2["ok"], "detail": v2.get("note", "")})
+            if v2["ok"]:
+                return _pack_results(alt, "free_search_mcp", v2, trace, verified=True)
+            if alt:
+                return _pack_results(alt, "free_search_mcp", v2, trace, verified=False)
+        except Exception as exc:
+            trace.append({"stage": "free_search_mcp", "count": 0, "pass": False, "detail": str(exc)[:160]})
         return _pack_results(primary, "web_search", v, trace, verified=False)
     except Exception as exc:
         trace.append({"stage": "web_search", "count": 0, "pass": False, "detail": str(exc)[:160]})
@@ -1557,6 +1569,108 @@ def bilibili_search(query, top_n=3):
         raise RuntimeError("未找到哔哩哔哩视频结果,请更换关键词")
     videos.sort(key=lambda v: (v.get("view") or 0), reverse=True)
     return videos[:top_n]
+
+
+# 公司官网搜索需排除的站(招聘平台/聚合站/搜索引擎/社交/技术站)
+_BAD_COMPANY_HOSTS = (
+    "mokahr.com", "hotjob.cn", "zhiye.com", "liepin", "zhipin", "51job", "chinahr",
+    "baidu.com", "bing.com", "google.", "sogou", "weibo", "zhihu", "douyin",
+    "xiaohongshu", "csdn", "gitee", "github", "bilibili", "ssp", "redsea", "jobbole",
+)
+
+
+def _pick_company_url(candidates, company):
+    """从搜索结果中挑一个看上去是公司官网的链接。"""
+    company = (company or "").strip()
+    for it in candidates:
+        href = (it.get("href") or "").strip()
+        text = (it.get("text") or "").strip()
+        low = (href or "").lower()
+        if not href or "http" not in low or any(b in low for b in _BAD_COMPANY_HOSTS):
+            continue
+        if "官网" in text or "官方网站" in text or (company and company in text):
+            return href
+    for it in candidates:
+        href = (it.get("href") or "").strip()
+        low = (href or "").lower()
+        if href and "http" in low and not any(b in low for b in _BAD_COMPANY_HOSTS):
+            return href
+    return ""
+
+
+_COMPANY_WEB_SYSTEM = """你是公司官网检索专家。针对唯一目标公司，使用官网检索工具链(verified_search / fetch_page / render_page)
+定位并核实该公司的官方网站。要求：
+- 优先用 verified_search 搜索"公司名 官网"，从候选里挑出该公司自身域名(排除招聘平台、聚合站、社交站、搜索引擎站)。
+- 若中文公司名搜索返回无关/字典结果，请改用该公司的**英文名、英文缩写或官网域名**再搜(例如 中冶南方 → WISDRI / wisdri.com)。
+- 若不确定官网，可再用 fetch_page 或 render_page 打开候选链接核实是否为该公司官网。
+- 若公司主域名/官网主页**访问超时或无法打开，一律视为无效**;请改用该公司的**招聘官网/人才招聘入口**(通常为 job.公司域名，或公司官网的招聘频道)，并确认其可访问。
+- 最终输出的官网必须**真实可访问(HTTP 200)**;若未验证过，请先用 fetch_page 验证;凡不可访问的网址一律不要输出。
+- 严格控制搜索轮次:最多调用 verified_search 3 次、fetch_page / render_page 各 1 次;**每次尽量只并行 1 个搜索**,避免反复空转。
+- 最终只输出一行该公司的官方网址(以 http:// 或 https:// 开头)，不要输出任何其他文字、Markdown 或工具调用标签。
+- 若达到次数上限仍无法确认官网，输出一行"未找到"。"""
+
+
+def _url_reachable(url, timeout=8):
+    """探测 URL 是否真的可访问(HTTP < 400)。"""
+    try:
+        resp = requests.get(url, headers=_headers(), timeout=timeout, allow_redirects=True)
+        return resp.status_code < 400
+    except Exception:
+        return False
+
+
+def _extract_company_url(text, timeout=8):
+    """从大模型输出中提取所有候选 http(s) 链接,逐个做可达性验证,
+    返回第一个真实可访问的官网(不可达/超时的跳过)。"""
+    if not text:
+        return ""
+    urls = re.findall(r"https?://[^\s<>\"'）)]+", text)
+    for raw in urls:
+        url = raw.rstrip(".,;)]}，。；）】")
+        low = url.lower()
+        if not url or any(b in low for b in _BAD_COMPANY_HOSTS):
+            continue
+        if _url_reachable(url, timeout=timeout):
+            return url
+    return ""
+
+
+@register_tool
+def search_company_website(company, timeout=120):
+    """用户点击"点击搜索"后,由大模型调用完整官网搜索工具链(verified_search / fetch_page / render_page)
+    对唯一目标公司搜索官网。超时上限 timeout 秒(默认 120);超时/未找到返回 ok=False。"""
+    query = (company or "").strip()
+    if not query:
+        return {"ok": False, "url": "", "error": "缺少公司名"}
+    from .llm import run_agent
+    tool_specs = [t for t in tools_spec() if t.get("function", {}).get("name") in ("verified_search", "fetch_page", "render_page")]
+    user = f"请定位公司“{query}”的官方网站，输出其官方网址（一行，http/https 开头）。"
+
+    def job():
+        return run_agent(
+            _COMPANY_WEB_SYSTEM,
+            user,
+            tools=tool_specs,
+            max_steps=3,
+            max_tokens=4096,
+        )
+
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
+    ex = ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(job)
+    try:
+        text = fut.result(timeout=int(timeout))
+    except FutTimeout:
+        ex.shutdown(wait=False)
+        return {"ok": False, "url": "", "error": "搜索超时"}
+    except Exception as exc:
+        ex.shutdown(wait=False)
+        return {"ok": False, "url": "", "error": f"{type(exc).__name__}: {exc}"}
+    ex.shutdown(wait=False)
+    url = _extract_company_url(text)
+    if not url:
+        return {"ok": False, "url": "", "error": "未找到目标公司官网"}
+    return {"ok": True, "url": url}
 
 
 def _parse_bili_count(text):

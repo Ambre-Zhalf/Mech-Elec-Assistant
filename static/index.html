@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>机电学习助手</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=33">
+  <link rel="stylesheet" href="/static/style.css?v=59">
 </head>
 <body>
   <div class="app">
@@ -108,24 +108,25 @@
       </section>
 
       <footer class="composer">
-        <div class="func-bar">
-          <div class="mode-switch" id="modeSwitch">
-            <button id="modeBtn" class="mode-btn" type="button">
-              <span id="modeIcon">🧭</span><span id="modeLabel">规划模式</span><span class="mode-arrow">▾</span>
-            </button>
-            <div id="modeMenu" class="mode-menu" hidden>
-              <button class="mode-option" data-mode="plan" type="button">🧭 规划模式</button>
-              <button class="mode-option" data-mode="challenge" type="button">🏆 竞赛学习模式</button>
-            </div>
-          </div>
-          <button id="booksBtn2" class="func-btn" type="button" title="图书">📚 图书</button>
-          <button id="graphBtn2" class="func-btn" type="button" title="知识图谱">📊 知识图谱</button>
-        </div>
         <div class="input-wrap">
           <textarea id="input" rows="1" placeholder="给机电学习助手发送消息" autocomplete="off"></textarea>
-          <button id="sendBtn" class="send-btn" title="发送">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
-          </button>
+          <div class="composer-chips">
+            <div class="mode-switch" id="modeSwitch">
+              <button id="modeBtn" class="mode-btn" type="button">
+                <span id="modeIcon">🧭</span><span id="modeLabel">规划模式</span><span class="mode-arrow">▾</span>
+              </button>
+              <div id="modeMenu" class="mode-menu" hidden>
+                <button class="mode-option" data-mode="plan" type="button">🧭 规划模式</button>
+                <button class="mode-option" data-mode="challenge" type="button">🏆 竞赛学习模式</button>
+              </div>
+            </div>
+            <button id="booksBtn2" class="func-btn" type="button" title="图书">📚 图书</button>
+            <button id="graphBtn2" class="func-btn" type="button" title="知识图谱">📊 知识图谱</button>
+            <button id="courseBtn2" class="func-btn" type="button" title="课程">📖 课程</button>
+            <button id="sendBtn" class="send-btn" title="发送">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+            </button>
+          </div>
         </div>
         <div class="composer-hint">内容由 AI 生成,请结合实际情况判断</div>
       </footer>
@@ -205,6 +206,43 @@
     </div>
   </div>
 
+  <!-- 课程弹窗:课程列表 -->
+  <div id="courseOverlay" class="books-overlay" hidden>
+    <div class="books-modal course-modal">
+      <div class="books-modal-head">
+        <span class="books-modal-title">课程中心</span>
+        <button id="courseCloseBtn" class="icon-btn" title="关闭">×</button>
+      </div>
+      <div class="books-modal-body course-body">
+        <div class="course-list">
+          <div class="course-item">
+            <div class="course-info">
+              <span class="course-name">机械设计</span>
+              <span class="course-desc">机械设计基础 · 系统内容精讲</span>
+            </div>
+            <button class="course-open-btn" type="button" data-course="https://47.92.219.134:7788/">打开</button>
+          </div>
+        </div>
+        <div class="course-more">其它课程更新中...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 视频查询弹窗:显示大模型工具调用/思考进度与最终视频 -->
+  <div id="courseQueryOverlay" class="cq-overlay" hidden>
+    <div class="cq-modal">
+      <div class="cq-head">
+        <div class="cq-head-left">
+          <span class="cq-title-label">视频查询</span>
+          <span id="cqTitle" class="cq-title"></span>
+        </div>
+        <button id="cqMinBtn" class="cq-min" type="button" title="最小化弹窗(不取消搜索)">_</button>
+      </div>
+      <div id="cqSteps" class="cq-steps"></div>
+      <div id="cqResult" class="cq-result"></div>
+    </div>
+  </div>
+
   <!-- 登录弹窗:首次进入输入昵称与密码 -->
   <div id="loginOverlay" class="nickname-overlay">
     <div class="nickname-modal">
@@ -229,7 +267,7 @@
   </div>
 
   <script src="/static/vendor/d3.min.js?v=3"></script>
-  <script src="/static/graph.js?v=3"></script>
+  <script src="/static/graph.js?v=4"></script>
   <script>
     window.MathJax = {
       tex: { inlineMath: [["$", "$"], ["\\(", "\\)"]], displayMath: [["$$", "$$"], ["\\[", "\\]"]] },
@@ -239,6 +277,6 @@
   </script>
   <script src="/static/vendor/tex-svg.js"></script>
   <script src="/static/vendor/marked.min.js"></script>
-  <script src="/static/app.js?v=33"></script>
+  <script src="/static/app.js?v=59"></script>
 </body>
 </html>

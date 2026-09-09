@@ -20,7 +20,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 # 暂时下架:原导入 books_md / pdf_extract 用于“利用本机 MinerU 扫描 PDF”的书籍识别功能
-from agent import anspire, books, graph_store, store, tasks, workflow  # noqa: E402  加载 .env 后再导入
+from agent import anspire, books, graph_store, store, tasks, tools, workflow  # noqa: E402  加载 .env 后再导入
 
 app = FastAPI(title="机电学习助手")
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
@@ -98,6 +98,14 @@ class BookDownloadIn(BaseModel):
 class AnspireSearchIn(BaseModel):
     query: str
     top_k: int = 10
+
+
+class CourseVideoIn(BaseModel):
+    query: str = ""
+
+
+class CompanyWebsiteIn(BaseModel):
+    company: str = ""
 
 
 class PresencePingIn(BaseModel):
@@ -400,6 +408,66 @@ def anspire_search_api(body: AnspireSearchIn):
             status_code=500,
             content={"ok": False, "error": f"{type(exc).__name__}: {exc}"},
         )
+
+
+# 课程视频查询任务:query -> task_id(同一课程复用同一任务,完成后再点可查看结果)
+_COURSE_TASK = {}
+
+
+@app.post("/api/course/video")
+def course_video_api(body: CourseVideoIn):
+    """点击某门课程的“查询”后,创建后台任务,由大模型调用 B站搜索工具检索视频;
+    返回 task_id,前端轮询 /status 获取工具调用进度与最终结果。关闭弹窗不代表取消任务。"""
+    query = (body.query or "").strip()
+    if not query:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "请提供课程名称"})
+    tid = _COURSE_TASK.get(query)
+    if tid and tasks.get_task(tid):
+        return {"ok": True, "task_id": tid, "reuse": True}
+    tid = tasks.create_task("course_video", query)
+    _COURSE_TASK[query] = tid
+
+    def job():
+        try:
+            text = workflow.search_course_videos(
+                query,
+                on_process=lambda line: tasks.append_log(tid, line),
+            )
+            tasks.finish_task(tid, result=text)
+        except Exception as exc:
+            tasks.finish_task(tid, error=f"{type(exc).__name__}: {exc}")
+
+    tasks.spawn_worker(job)
+    return {"ok": True, "task_id": tid}
+
+
+@app.get("/api/course/video/status/{task_id}")
+def course_video_status_api(task_id: str):
+    """查询某课程视频搜索任务的进度(工具调用/思考日志)与最终结果。"""
+    t = tasks.get_task(task_id)
+    if not t:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "任务不存在或已过期"})
+    return {
+        "ok": True,
+        "status": t["status"],   # running | done | error
+        "logs": t["logs"],
+        "text": t["result"] or "",
+        "error": t["error"],
+    }
+
+
+@app.post("/api/company/website")
+def company_website_api(body: CompanyWebsiteIn):
+    """用户点击某公司的"点击搜索"后,用 Playwright 搜索该公司的官网(单次,超时上限 100s)。"""
+    company = (body.company or "").strip()
+    if not company:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "请提供公司名称"})
+    try:
+        r = tools.search_company_website(company)
+        return {"ok": True, "found": r.get("ok", False), "url": r.get("url", ""), "error": r.get("error", "")}
+    except Exception as exc:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"ok": False, "error": f"{type(exc).__name__}: {exc}"})
 
 
 @app.get("/api/books")

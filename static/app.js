@@ -26,6 +26,9 @@ const booksOverlay = document.getElementById("booksOverlay");
 const booksModalTitle = document.getElementById("booksModalTitle");
 const booksBackBtn = document.getElementById("booksBackBtn");
 const booksCloseBtn = document.getElementById("booksCloseBtn");
+const courseBtn2 = document.getElementById("courseBtn2");
+const courseOverlay = document.getElementById("courseOverlay");
+const courseCloseBtn = document.getElementById("courseCloseBtn");
 const booksMenu = document.getElementById("booksMenu");
 const booksSearchView = document.getElementById("booksSearchView");
 const booksMineView = document.getElementById("booksMineView");
@@ -124,7 +127,14 @@ function inlineMd(s) {
 
 function toTable(rows) {
   const cells = rows.map(r =>
-    r.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => inlineMd(c.trim()))
+    r.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => {
+      let cell = inlineMd(c.trim());
+      cell = cell.replace(/\[\[QUERY:([^\]]*)\]\]/g, (m, q) => {
+        const name = q.trim().replace(/"/g, "&quot;");
+        return '<button type="button" class="query-btn" data-query="' + name + '" title="点击查询该课程的 B 站视频">查询</button>';
+      });
+      return cell;
+    })
   );
   const head = cells[0] || [];
   const body = cells.slice(2);
@@ -133,10 +143,27 @@ function toTable(rows) {
   return '<div class="table-wrap">' + html + "</tbody></table></div>";
 }
 
+function renderCompanyCard(lines) {
+  let name = "", reason = "", web = "";
+  for (const raw of lines) {
+    const t = (raw || "").trim().replace(/^[-*]\s*/, "").replace(/^\d+[.、]\s*/, "");
+    if (t.indexOf("企业名称") === 0) name = t.replace(/^企业名称[:：]?\s*/, "");
+    else if (t.indexOf("推荐理由") === 0) reason = t.replace(/^推荐理由[:：]?\s*/, "");
+    else if (t.indexOf("官方网址") === 0) web = t.replace(/^官方网址[:：]?\s*/, "");
+  }
+  let h = '<div class="company-card">';
+  if (name) h += '<div class="company-card-line"><span class="cc-label">企业名称:</span>' + escapeHtml(name) + "</div>";
+  if (reason) h += '<div class="company-card-line"><span class="cc-label">推荐理由:</span>' + escapeHtml(reason) + "</div>";
+  if (web) h += '<div class="company-card-line">' + escapeHtml(web) + "</div>";
+  h += "</div>";
+  return h;
+}
+
 function renderMd(src) {
   const parts = src.split(/```/);
   let html = "";
   let listType = null;
+  let companyCard = null;
 
   const closeList = () => {
     if (listType) { html += "</" + listType + ">"; listType = null; }
@@ -172,14 +199,29 @@ function renderMd(src) {
     };
     for (const line of lines) {
       const l = line.trim();
+      if (l === "[[COMPANY_CARD]]") { flushTable(); closeList(); companyCard = []; continue; }
+      if (companyCard !== null) {
+        if (l === "[[/COMPANY_CARD]]") {
+          html += renderCompanyCard(companyCard);
+          companyCard = null;
+        } else {
+          companyCard.push(line);
+        }
+        continue;
+      }
       if (l.startsWith("|")) { closeList(); table.push(line); continue; }
       flushTable();
       if (/^#{1,4}\s/.test(l)) {
         closeList();
         html += "<h4>" + inlineMd(l.replace(/^#+\s*/, "")) + "</h4>";
       } else if (/^[-*]\s/.test(l)) {
-        if (listType !== "ul") { closeList(); html += "<ul>"; listType = "ul"; }
-        html += "<li>" + inlineMd(l.slice(2)) + "</li>";
+        if (listType === "ol") {
+          // 有序列表(如公司1/2/3)里的缩进子项:追加到当前项,保持编号连续不断
+          html += "<br>" + inlineMd(l.slice(2));
+        } else {
+          if (listType !== "ul") { closeList(); html += "<ul>"; listType = "ul"; }
+          html += "<li>" + inlineMd(l.slice(2)) + "</li>";
+        }
       } else if (/^\d+[.、]\s/.test(l)) {
         if (listType !== "ol") { closeList(); html += "<ol>"; listType = "ol"; }
         html += "<li>" + inlineMd(l.replace(/^\d+[.、]\s*/, "")) + "</li>";
@@ -194,6 +236,10 @@ function renderMd(src) {
         closeList();
         const inner = l.slice("[[OPEN_BOOKS]]".length, -"[[/OPEN_BOOKS]]".length).trim();
         html += '<button type="button" class="books-cta">' + inlineMd(inner) + "</button>";
+      } else if (l.startsWith("[[OPEN_COURSE]]") && l.endsWith("[[/OPEN_COURSE]]")) {
+        closeList();
+        const inner = l.slice("[[OPEN_COURSE]]".length, -"[[/OPEN_COURSE]]".length).trim();
+        html += '<button type="button" class="books-cta course-cta">' + inlineMd(inner) + "</button>";
       } else if (l === "---" || l === "") {
         closeList();
         if (l === "---") html += "<hr style='border:none;border-top:1px solid var(--border);margin:10px 0'>";
@@ -205,6 +251,17 @@ function renderMd(src) {
     flushTable();
     closeList();
   }
+  // [[GREEN:...]] → 绿色文字
+  html = html.replace(/\[\[GREEN:([^\]]*)\]\]/g, (m, inner) => '<span class="green-text">' + inner + '</span>');
+  // [[SEARCH_COMPANY:公司名]] → 「点击搜索」按钮 + 浅灰胶囊框
+  html = html.replace(/\[\[SEARCH_COMPANY:([^\]]*)\]\]/g, (m, company) => {
+    const name = company.trim();
+    return '<span class="search-web-row">' +
+      '<span class="search-web-label">官方网址:</span>' +
+      '<button type="button" class="search-web-btn" data-company="' + name.replace(/"/g, "&quot;") + '">点击搜索</button>' +
+      '<span class="search-web-result">待搜索</span>' +
+      '</span>';
+  });
   return html;
 }
 
@@ -673,6 +730,12 @@ function closeGraphView() {
 }
 
 async function importGraph(jsonStr, btn) {
+  // 已导入过 → 直接跳转到对应图谱,不再重复建图
+  if (btn.dataset.graphId) {
+    showGraphView();
+    if (window.KG) window.KG.importGraphResult(btn.dataset.graphId);
+    return;
+  }
   if (btn.disabled) return;
   btn.disabled = true;
   const original = btn.textContent;
@@ -686,7 +749,9 @@ async function importGraph(jsonStr, btn) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) throw new Error(data.error || "导入失败,请稍后重试");
-    btn.textContent = "✅ 已导入,正在打开…";
+    btn.textContent = "✅ 已导入";
+    btn.disabled = false;
+    btn.dataset.graphId = data.graph_id;
     showGraphView();
     if (window.KG) window.KG.importGraphResult(data.graph_id);
   } catch (err) {
@@ -830,8 +895,9 @@ modeMenu.addEventListener("click", (e) => {
   if (opt) {
     const chosen = opt.dataset.mode || "plan";
     if (chosen === "challenge") {
-      // 竞赛学习已迁移到外部站点:点击“竞赛学习模式”直接跳转
-      window.location.href = "https://47.92.219.134:7788/";
+      // 竞赛学习已迁移到外部站点:点击“竞赛学习模式”在新标签打开
+      window.open("http://47.92.219.134:8369/", "_blank");
+      modeMenu.hidden = true;
       return;
     }
     chatMode = chosen;
@@ -854,7 +920,48 @@ convList.addEventListener("click", e => {
     deleteConversation(del.getAttribute("data-del"));
   }
 });
+async function searchCompanyWebsite(btn) {
+  const company = btn.dataset.company || "";
+  if (!company) return;
+  const row = btn.closest(".search-web-row");
+  const result = row ? row.querySelector(".search-web-result") : null;
+  if (btn.disabled || (result && result.dataset.loading === "1")) return;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = "搜索中…";
+  if (result) result.dataset.loading = "1";
+  try {
+    const res = await fetch("/api/company/website", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ company }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.ok && data.found && data.url) {
+      result.classList.remove("notfound");
+      result.classList.add("done");
+      result.innerHTML = '<a href="' + escapeHtml(data.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(data.url) + "</a>";
+    } else {
+      result.classList.remove("done");
+      result.classList.add("notfound");
+      result.textContent = "未找到目标公司官网";
+    }
+  } catch (err) {
+    result.classList.remove("done");
+    result.classList.add("notfound");
+    result.textContent = "未找到目标公司官网";
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+    if (result) delete result.dataset.loading;
+  }
+}
+
 chat.addEventListener("click", e => {
+  const sw = e.target.closest(".search-web-btn");
+  if (sw) { searchCompanyWebsite(sw); return; }
+  const ctaCourse = e.target.closest(".course-cta");
+  if (ctaCourse) { openCourses(); return; }
   const cta = e.target.closest(".books-cta");
   if (cta) { openBooks(); return; }
   const btn = e.target.closest(".graph-import-btn");
@@ -912,6 +1019,14 @@ function openBooks() {
 
 function closeBooks() {
   booksOverlay.hidden = true;
+}
+
+function openCourses() {
+  if (courseOverlay) courseOverlay.hidden = false;
+}
+
+function closeCourses() {
+  if (courseOverlay) courseOverlay.hidden = true;
 }
 
 function setBookStatus(text, isError) {
@@ -1413,6 +1528,7 @@ async function submitBookName() {
 const booksBtn2 = document.getElementById("booksBtn2");
 const graphBtn2 = document.getElementById("graphBtn2");
 if (booksBtn2) booksBtn2.addEventListener("click", openBooks);
+if (courseBtn2) courseBtn2.addEventListener("click", openCourses);
 if (graphBtn2) graphBtn2.addEventListener("click", () => {
   if (graphMode) closeGraphView(); else showGraphView();
 });
@@ -1421,6 +1537,19 @@ booksBackBtn.addEventListener("click", showBooksMenu);
 booksOverlay.addEventListener("click", e => {
   if (e.target === booksOverlay) closeBooks();
 });
+if (courseCloseBtn) courseCloseBtn.addEventListener("click", closeCourses);
+if (courseOverlay) {
+  courseOverlay.addEventListener("click", e => {
+    if (e.target === courseOverlay) closeCourses();
+  });
+  courseOverlay.addEventListener("click", e => {
+    const op = e.target.closest("[data-course]");
+    if (op) {
+      window.open(op.dataset.course, "_blank");
+      closeCourses();
+    }
+  });
+}
 booksMenu.querySelectorAll("[data-books]").forEach(b => {
   b.addEventListener("click", () => {
     if (b.dataset.books === "search") showBooksSearch();
@@ -1749,3 +1878,125 @@ initLogin();
 
 // 支持 #graph 直达知识图谱视图
 if (location.hash === "#graph") showGraphView();
+
+// ---------- 课程视频查询:后台任务 + 弹窗进度 ----------
+const cqOverlay = document.getElementById("courseQueryOverlay");
+const cqMinBtn = document.getElementById("cqMinBtn");
+const cqSteps = document.getElementById("cqSteps");
+const cqResult = document.getElementById("cqResult");
+const cqTitle = document.getElementById("cqTitle");
+
+const __courseTasks = {};   // query -> {id, done}
+const __courseResult = {};  // query -> markdown result
+const __courseLogs = {};    // query -> [log lines]
+let __cqPoll = null;        // 当前轮询定时器(每 1s)
+
+function renderCourseSteps(query) {
+  if (!cqSteps) return;
+  const logs = __courseLogs[query] || [];
+  cqSteps.innerHTML = logs.map(l => '<div class="cq-step">' + escapeHtml(l) + "</div>").join("");
+}
+
+function renderCourseResult(query) {
+  if (!cqResult) return;
+  const md = __courseResult[query];
+  cqResult.innerHTML = (md != null)
+    ? '<div class="cq-result-title">推荐视频(播放量前 3)</div>' + renderMd(md)
+    : "";
+}
+
+function markCourseDone(query) {
+  document.querySelectorAll(".query-btn").forEach(b => {
+    if ((b.dataset.query || "") === query) {
+      b.classList.add("done");
+      b.textContent = "查看";
+    }
+  });
+}
+
+function markCourseRunning(query) {
+  document.querySelectorAll(".query-btn").forEach(b => {
+    if ((b.dataset.query || "") === query && !b.classList.contains("done")) {
+      b.textContent = "查询中…";
+    }
+  });
+}
+
+function stopCoursePoll() {
+  if (__cqPoll) { clearInterval(__cqPoll); __cqPoll = null; }
+}
+
+function startCoursePoll(query, taskId) {
+  stopCoursePoll();
+  const tick = async () => {
+    try {
+      const res = await fetch("/api/course/video/status/" + encodeURIComponent(taskId));
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "查询失败");
+      __courseLogs[query] = data.logs || [];
+      renderCourseSteps(query);
+      if (data.status === "done") {
+        __courseResult[query] = data.text || "";
+        if (__courseTasks[query]) __courseTasks[query].done = true;
+        markCourseDone(query);
+        renderCourseResult(query);
+        stopCoursePoll();
+        return;
+      }
+      if (data.status === "error") {
+        if (cqResult) cqResult.innerHTML = '<div class="cq-error">⚠️ ' + escapeHtml(data.error || "查询失败") + "</div>";
+        stopCoursePoll();
+      }
+    } catch (err) {
+      if (cqResult) cqResult.innerHTML = '<div class="cq-error">⚠️ ' + escapeHtml(err.message || "查询失败") + "</div>";
+      stopCoursePoll();
+    }
+  };
+  tick();
+  __cqPoll = setInterval(tick, 1000);
+}
+
+async function openCourseQuery(query) {
+  if (!query) return;
+  if (cqOverlay) cqOverlay.hidden = false;
+  if (cqResult) cqResult.innerHTML = "";
+  if (cqTitle) cqTitle.textContent = query;
+  // 该课程已查询完成,直接展示缓存结果
+  if (__courseResult[query] != null) {
+    renderCourseSteps(query);
+    renderCourseResult(query);
+    return;
+  }
+  let taskId = (__courseTasks[query] && __courseTasks[query].id);
+  if (!taskId) {
+    try {
+      const res = await fetch("/api/course/video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "查询失败");
+      taskId = data.task_id;
+      __courseTasks[query] = { id: taskId, done: false };
+    } catch (err) {
+      if (cqResult) cqResult.innerHTML = '<div class="cq-error">⚠️ ' + escapeHtml(err.message || "开始查询失败") + "</div>";
+      return;
+    }
+  }
+  markCourseRunning(query);
+  startCoursePoll(query, taskId);
+}
+
+// 点击「查询/查看」→ 打开弹窗并跟踪(或复用)后台任务
+document.addEventListener("click", (e) => {
+  const q = e.target.closest(".query-btn");
+  if (!q) return;
+  openCourseQuery(q.dataset.query || "");
+});
+
+// 「_」最小化:只关弹窗,不取消后台任务
+if (cqMinBtn) cqMinBtn.addEventListener("click", () => {
+  if (cqOverlay) cqOverlay.hidden = true;
+  stopCoursePoll();
+});
