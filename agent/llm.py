@@ -11,8 +11,10 @@ load_dotenv()
 
 API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
-MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
-MODEL_PRO = os.environ.get("DEEPSEEK_MODEL_PRO", "deepseek-v4-pro").strip()
+# 全部环节统一使用 DeepSeek V4.1 Flash(deepseek-flash)
+MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash").strip()
+# 历史遗留的“增强模型”变量:未配置(或在 .env 里留空)时自动与 MODEL 保持同一模型
+MODEL_PRO = os.environ.get("DEEPSEEK_MODEL_PRO", "").strip() or MODEL
 TIMEOUT = 600
 
 
@@ -86,7 +88,9 @@ TOOL_CAPS = {
     "verified_search": int(os.environ.get("TOOL_CAP_VERIFIED_SEARCH", "10")),
     "fetch_page": int(os.environ.get("TOOL_CAP_FETCH_PAGE", "8")),
     "bilibili_search": int(os.environ.get("TOOL_CAP_BILIBILI", "14")),
-    "render_page": int(os.environ.get("TOOL_CAP_RENDER_PAGE", "6")),
+    # 招聘环节的典型用量:入口列表页 1~2 次 + 校园招聘页 1 次 + 逐个岗位详情 3~5 次,
+    # 上限给到 8 才不会在抓 JD 的中途被强制收尾(可用 .env 覆盖)。
+    "render_page": int(os.environ.get("TOOL_CAP_RENDER_PAGE", "8")),
     "find_recruitment_links": int(os.environ.get("TOOL_CAP_FIND_RECRUIT", "3")),
     # 暂时下架:原“parse_pdf”(PDF 识别)工具已下架,不再计入工具额度
     # "parse_pdf": int(os.environ.get("TOOL_CAP_PARSE_PDF", "4")),

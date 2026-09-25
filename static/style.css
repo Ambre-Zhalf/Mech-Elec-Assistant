@@ -2627,3 +2627,56 @@ h1, h2, h3, h4 {
 .company-card-line { font-size: 13.5px; color: var(--text); word-break: break-word; }
 .cc-label { color: #6b7a92; font-weight: 600; }
 
+/* ---------- 岗位:灰色胶囊卡片(上下留间距) ---------- */
+.job-card {
+  margin: 14px 0;
+  padding: 12px 14px;
+  background: rgba(226, 232, 240, .55);
+  border: 1px solid rgba(120, 130, 150, .22);
+  border-radius: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.job-card-line { font-size: 13.5px; color: var(--text); word-break: break-word; }
+.job-card a { color: var(--primary); text-decoration: underline; }
+.job-card a:hover { color: var(--primary-hover); }
+
+/* ---------- 公司/岗位卡片右下角“选择”按钮(绿色液态胶囊) ---------- */
+.card-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+.pick-btn {
+  border: 1px solid rgba(22, 163, 74, .45);
+  background: linear-gradient(180deg, rgba(52, 199, 123, .94), rgba(18, 150, 96, .96));
+  color: #fff;
+  border-radius: 999px;
+  padding: 5px 18px;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  cursor: pointer;
+  backdrop-filter: blur(10px) saturate(160%);
+  -webkit-backdrop-filter: blur(10px) saturate(160%);
+  box-shadow: 0 8px 18px -10px rgba(16, 122, 78, .85), inset 0 1px 0 rgba(255, 255, 255, .55);
+  transition: transform .12s ease, box-shadow .12s ease, background .12s ease, opacity .12s ease;
+}
+.pick-btn:hover {
+  background: linear-gradient(180deg, rgba(66, 214, 136, .96), rgba(21, 166, 105, .98));
+  box-shadow: 0 10px 22px -10px rgba(16, 122, 78, .95), inset 0 1px 0 rgba(255, 255, 255, .65);
+  transform: translateY(-1px);
+}
+.pick-btn:active { transform: translateY(1px); }
+.pick-btn:disabled { cursor: default; opacity: .5; transform: none; }
+.pick-btn.picked {
+  opacity: 1;
+  color: #12734c;
+  border-color: rgba(18, 150, 96, .55);
+  background: linear-gradient(180deg, rgba(255, 255, 255, .88), rgba(214, 245, 227, .92));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .85);
+}
+.company-card.picked { border-color: rgba(18, 150, 96, .45); background: rgba(222, 245, 233, .55); }
+.job-card.picked { border-color: rgba(18, 150, 96, .45); background: rgba(222, 245, 233, .55); }
+

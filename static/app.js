@@ -155,8 +155,48 @@ function renderCompanyCard(lines) {
   if (name) h += '<div class="company-card-line"><span class="cc-label">企业名称:</span>' + escapeHtml(name) + "</div>";
   if (reason) h += '<div class="company-card-line"><span class="cc-label">推荐理由:</span>' + escapeHtml(reason) + "</div>";
   if (web) h += '<div class="company-card-line">' + escapeHtml(web) + "</div>";
+  if (name) h += pickRow("company", name);
   h += "</div>";
   return h;
+}
+
+// 卡片右下角的“选择”按钮(绿色液态胶囊)
+function pickRow(kind, value) {
+  const v = String(value || "").trim();
+  if (!v) return "";
+  const title = kind === "job" ? "选择该岗位作为意向岗位" : "选择该公司作为意向公司";
+  return '<div class="card-actions"><button type="button" class="pick-btn pick-' + kind +
+    '" data-pick="' + v.replace(/"/g, "&quot;") + '" data-kind="' + kind + '" title="' + title + '">选择</button></div>';
+}
+
+function renderJobCard(lines) {
+  const fields = [];
+  for (const raw of lines) {
+    let t = (raw || "").trim().replace(/^[-*]\s*/, "").replace(/^\d+[.、]\s*/, "");
+    if (!t) continue;
+    const m = t.match(/^(.{1,16}?)[:：]\s*([\s\S]*)$/);
+    if (m) {
+      fields.push({ label: m[1].trim(), segs: [m[2].trim()] });
+    } else if (fields.length) {
+      fields[fields.length - 1].segs.push(t);
+    } else {
+      fields.push({ label: "", segs: [t] });
+    }
+  }
+  let jobName = "";
+  for (const f of fields) {
+    if (!jobName && f.label && f.label.indexOf("岗位") === 0) jobName = f.segs.join(" ").trim();
+  }
+  let html = '<div class="job-card">';
+  for (const f of fields) {
+    html += '<div class="job-card-line">';
+    if (f.label) html += '<span class="cc-label">' + escapeHtml(f.label) + ':</span>';
+    html += f.segs.map(s => linkify(s)).join("<br>");
+    html += "</div>";
+  }
+  if (jobName) html += pickRow("job", jobName);
+  html += "</div>";
+  return html;
 }
 
 function renderMd(src) {
@@ -164,6 +204,7 @@ function renderMd(src) {
   let html = "";
   let listType = null;
   let companyCard = null;
+  let jobCard = null;
 
   const closeList = () => {
     if (listType) { html += "</" + listType + ">"; listType = null; }
@@ -199,6 +240,16 @@ function renderMd(src) {
     };
     for (const line of lines) {
       const l = line.trim();
+      if (l === "[[JOB_CARD]]") { flushTable(); closeList(); jobCard = []; continue; }
+      if (jobCard !== null) {
+        if (l === "[[/JOB_CARD]]") {
+          html += renderJobCard(jobCard);
+          jobCard = null;
+        } else {
+          jobCard.push(line);
+        }
+        continue;
+      }
       if (l === "[[COMPANY_CARD]]") { flushTable(); closeList(); companyCard = []; continue; }
       if (companyCard !== null) {
         if (l === "[[/COMPANY_CARD]]") {
@@ -708,6 +759,21 @@ async function sendAsUser(text) {
   }
 }
 
+// 点击卡片右下角“选择”:把该公司/岗位当作意向,自动以用户身份发出名称,由后端进入下一步
+function pickCard(btn) {
+  if (sendBtn.disabled) return;          // 上一轮还在输出,先等结束
+  const name = (btn.dataset.pick || "").trim();
+  if (!name) return;
+  const kind = btn.dataset.kind || "company";
+  // 同类按钮只能选一个:同类型的其他按钮一并置灰,避免重复选择打乱流程
+  document.querySelectorAll(".pick-btn.pick-" + kind).forEach(b => { b.disabled = true; });
+  btn.classList.add("picked");
+  btn.textContent = "已选择";
+  const card = btn.closest(".company-card, .job-card");
+  if (card) card.classList.add("picked");
+  sendAsUser(name);
+}
+
 // ---------- 知识图谱:一键导入 + 图谱视图 ----------
 
 function showGraphView() {
@@ -849,16 +915,19 @@ async function loadConversation(id) {
   try {
     const res = await fetch("/api/sessions/" + encodeURIComponent(id) + "/messages?client_id=" + encodeURIComponent(clientId));
     const messages = await res.json();
+    if (id !== sessionId) return;   // 期间又切到了别的对话,放弃这次渲染
     chat.innerHTML = "";
     if (messages && messages.length) {
       for (const m of messages) appendMsg(m.role, m.content, m.mode, m.think, m.think_time);
+      scrollToBottom();
     } else {
       showWelcome();
     }
   } catch (e) {
     showWelcome();
   }
-  input.focus();
+  // 登录框还开着时不抢焦点,避免把光标从昵称输入框上抢走
+  if (!loginOverlay || loginOverlay.hidden) input.focus();
 }
 
 function updateModeUI() {
@@ -958,6 +1027,8 @@ async function searchCompanyWebsite(btn) {
 }
 
 chat.addEventListener("click", e => {
+  const pick = e.target.closest(".pick-btn");
+  if (pick) { pickCard(pick); return; }
   const sw = e.target.closest(".search-web-btn");
   if (sw) { searchCompanyWebsite(sw); return; }
   const ctaCourse = e.target.closest(".course-cta");
@@ -1712,7 +1783,9 @@ async function loginSubmit() {
     localStorage.setItem("auth_token", authToken);
     loginOverlay.hidden = true;
     loginPassword.value = "";
-    input.focus();
+    // 登录后开启一段全新对话:避免沿用退出前那段会话的 session_id,
+    // 否则界面显示的是自我介绍,点“开始”却把消息发进了上一段对话
+    startNewChat();
     startPresenceLoop();
     if (logoutBtn) logoutBtn.hidden = false;
     if (recordsBtn) recordsBtn.hidden = (authRole !== "admin");
@@ -1750,8 +1823,8 @@ async function logoutSubmit() {
   if (onlineCount) onlineCount.textContent = "";
   closeAdminRecords();
   input.value = "";
-  showWelcome();
-  refreshConversations();
+  // 退出登录时同样重置到全新对话,保证界面状态与后端会话状态一致
+  startNewChat();
   showLoginGate();
 }
 
@@ -1872,8 +1945,8 @@ if (adminRecordsList) adminRecordsList.addEventListener("click", e => {
 });
 
 refreshConversations();
-showWelcome();
-input.focus();
+// 刷新页面后自动接着上次那段对话继续;没有历史消息时会自动回落到自我介绍
+loadConversation(sessionId);
 initLogin();
 
 // 支持 #graph 直达知识图谱视图

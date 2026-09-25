@@ -1,11 +1,15 @@
 """Agent 可调用的工具:联网搜索、网页读取、B站视频搜索。"""
 
 import base64
+import codecs
+import functools
 import html as html_mod
 import json
+import locale
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -421,6 +425,7 @@ _HOMEPAGE_CACHE = {}
 
 def _homepage_cached(fn):
     """按公司名缓存官网主页探测结果,避免同会话/同公司重复探测。"""
+    @functools.wraps(fn)
     def wrapper(company, *args, **kwargs):
         key = (company or "").strip()
         if key and key in _HOMEPAGE_CACHE:
@@ -612,6 +617,9 @@ _RECRUIT_CACHE = {}
 
 def _recruit_cached(fn):
     """按公司名缓存招聘入口挖掘结果,避免同会话/同公司重复搜索。"""
+    # 必须保留原函数名:注册工具时按 __name__ 入表,少了这行会把工具注册成 wrapper,
+    # 导致大模型调用 find_recruitment_links 时收到“未知工具”,招聘入口发现整条链路失效。
+    @functools.wraps(fn)
     def wrapper(company, homepage="", *args, **kwargs):
         key = (company or "").strip()
         if key and key in _RECRUIT_CACHE:
@@ -632,6 +640,9 @@ def find_recruitment_links(company, homepage=""):
     中\"招聘/加入我们/Careers\"的真实链接(如 mokahr、hotjob 等招聘平台);
     再用 web_search 搜\"校园招聘 网申 官网\",从结果正文里筛出真实网申地址。
     全部候选均来自真实页面或搜索结果,避免在官网下乱猜子路径。
+
+    返回顺序即优先级(官网导航里挖到的最可信,排第一),并已剔除域名解析失败的
+    死链(企业旧招聘子域常见);每项带 priority 字段(1 = 最优先渲染)。
     """
     company = (company or "").strip()
     if not company:
@@ -648,6 +659,9 @@ def find_recruitment_links(company, homepage=""):
         if url in seen:
             return
         if not _looks_like_recruitment(url, title, ""):
+            return
+        # 域名都解析不了的直接剔除(如企业已下线的旧网申子域),不占用抓取额度
+        if not _url_resolves(url):
             return
         seen.add(url)
         candidates.append({"title": title[:80], "url": url, "source": source})
@@ -686,12 +700,16 @@ def find_recruitment_links(company, homepage=""):
                 "title": "官网主页(首页导航未直接发现招聘入口,请进入后自行查找)",
                 "url": homepage,
                 "source": "官网主页",
+                "priority": 1,
             }
         ]
 
     if not candidates:
         return {"error": f"未能找到 {company} 的招聘入口,请核对公司全称或改用其他关键词"}
-    return candidates[:10]
+    top = candidates[:10]
+    for i, c in enumerate(top, 1):
+        c["priority"] = i
+    return top
 
 
 @register_tool
@@ -1323,7 +1341,15 @@ def _render_dom_playwright_search(url, keyword, wait_ms=12000, timeout=50):
 
 
 def _collect_jobs(html, url):
-    """从渲染后的列表页提取“职位标题 + 详情链接”对,供 Agent 逐个打开抓 JD。"""
+    """从渲染后的列表页提取“职位标题 + 详情链接”对,供 Agent 逐个打开抓 JD。
+
+    除通用特征外,命中招聘平台适配表时还会补上该平台自己的职位链接特征
+    (如 mokahr 的 `#/job/`),避免因各站点 URL 形态不同而漏掉岗位。
+    """
+    keys = ["jobid=", "/jobs", "#/job", "positionid", "job-detail"]
+    platform = _recruit_platform(url)
+    if platform:
+        keys += [k for k in platform.get("job_patterns", ()) if k not in keys]
     jobs = []
     seen = set()
     parsed = urlparse(url)
@@ -1333,7 +1359,7 @@ def _collect_jobs(html, url):
         low = href.lower()
         if low.startswith(("javascript", "mailto:", "tel:")):
             continue
-        if not any(k in low for k in ("jobid=", "/jobs", "#/job", "positionid", "job-detail")):
+        if not any(k in low for k in keys):
             continue
         if href in seen:
             continue
@@ -1352,20 +1378,106 @@ def _collect_jobs(html, url):
 _JOB_SEARCH_MEMO = {}
 
 
+# 常见网申/招聘平台适配表:命中后按已知形态处理,不必每次靠通用规则猜。
+# public=True 表示“职位列表公开可看”(登录只用于投递),不能预判成登录墙。
+_RECRUIT_PLATFORMS = (
+    {
+        "key": "mokahr",
+        "name": "Moka(mokahr)",
+        "hosts": ("mokahr.com",),
+        "public": True,
+        "job_patterns": ("#/job/",),
+        "campus_keys": ("校园招聘", "校招"),
+    },
+    {
+        "key": "hotjob",
+        "name": "HotJob",
+        "hosts": ("hotjob.cn",),
+        "public": True,
+        "job_patterns": ("jobid=", "/job/"),
+        "campus_keys": ("校园招聘", "校招"),
+    },
+    {
+        "key": "beisen",
+        "name": "北森网申",
+        "hosts": ("zhiye.com",),
+        "public": False,          # 该平台职位列表常需登录后才加载
+        "job_patterns": ("jobid=", "positionid", "/job/"),
+        "campus_keys": ("校园招聘", "校招"),
+    },
+)
+
+
+def _recruit_platform(url):
+    """按域名匹配招聘平台适配表,命中返回该平台配置,否则返回 None。"""
+    host = _url_host(url or "")
+    if not host:
+        return None
+    for p in _RECRUIT_PLATFORMS:
+        for h in p["hosts"]:
+            if host == h or host.endswith("." + h):
+                return p
+    return None
+
+
+_HOST_DNS_CACHE = {}
+
+
+def _host_resolves(host):
+    """域名能否解析(带缓存)。用于在浪费一次渲染前剔除已下线的招聘子域。"""
+    host = (host or "").strip().lower()
+    if not host:
+        return False
+    if _HOST_DNS_CACHE.get(host):
+        return True
+    try:
+        socket.getaddrinfo(host, None)
+    except Exception:
+        # 只缓存“能解析”的结果:偶发解析抖动不会把正常站点长期误判为死链
+        return False
+    _HOST_DNS_CACHE[host] = True
+    return True
+
+
+def _url_resolves(url):
+    """URL 的主机名能否解析。"""
+    return _host_resolves(_url_host(url or ""))
+
+
 _LOGIN_WALL_HOSTS = (
     "hr.hgtech.com.cn",
     "redsea",
-    "mokahr.com",
-    "hotjob.cn",
     "zhiye.com",
     "ssp",
 )
 
 
 def _is_login_wall(url):
-    """判断是否为需登录的招聘系统(企业自研/网申平台),命中则不应反复渲染。"""
+    """判断是否为需登录的招聘系统(企业自研/网申平台),命中则不应反复渲染。
+
+    适配表里 public=True 的平台(如 mokahr)职位列表是公开可看的,登录只用于投递,
+    不能预判成登录墙——否则一旦渲染慢或页面结构变化,官方可抓的岗位会被误判成“需登录”。
+    """
+    platform = _recruit_platform(url)
+    if platform:
+        return not platform.get("public", True)
     low = (url or "").lower()
     return any(h in low for h in _LOGIN_WALL_HOSTS)
+
+
+def _find_campus_url(html, url, platform=None):
+    """从页面导航里找出“校园招聘”入口链接(校招岗位对在校生才有意义)。"""
+    keys = (platform or {}).get("campus_keys", ("校园招聘", "校招"))
+    for m in re.finditer(r'<a\b[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, re.S | re.I):
+        text = _clean_text(re.sub(r"<[^>]+>", "", m.group(2)))
+        if not text or not any(k in text for k in keys):
+            continue
+        href = html_mod.unescape(m.group(1)).strip()
+        if href.startswith(("#", "/")):
+            href = urljoin(url, href)
+        if href.startswith(("http://", "https://")):
+            return href
+    return ""
 
 
 @register_tool
@@ -1373,12 +1485,24 @@ def render_page(url, max_chars=9000, wait_ms=12000, keyword=""):
     """用 Playwright 无头浏览器渲染网页(执行 JS、等待 XHR)后抓取正文,
     专用于前端动态渲染的招聘页。返回 {url,title,text};
     若页面含职位详情链接则附 jobs;若职位失效则附 expired=true;
-    若页面为“只能通过搜索框定向查询”的 SPA 招聘页,附 needs_keyword=true。
+    若页面为“只能通过搜索框定向查询”的 SPA 招聘页,附 needs_keyword=true;
+    若域名无法解析或页面没有正文,附 unreachable=true(表示该地址已失效,应改用其他入口);
+    命中招聘平台适配表时附 platform,页面存在校园招聘入口时附 campus_url。
     keyword 非空时会自动在页面搜索框输入岗位关键词并回车(方案1/2),等待结果渲染再返回。
     Playwright 不可用时回退到旧渲染方式。
     """
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
+    # 先做域名解析校验:已下线的招聘子域直接判定不可用,既省掉一次渲染,
+    # 也避免空壳页被误判成“需登录”而让 Agent 放弃官方渠道。
+    if not _url_resolves(url):
+        return {
+            "url": url,
+            "title": "",
+            "text": "",
+            "unreachable": True,
+            "note": "该域名无法解析(地址有误或站点已下线),请改用 find_recruitment_links 返回的其他候选入口,不要据此判断该公司没有岗位。",
+        }
     kw = (keyword or "").strip()
     try:
         if kw:
@@ -1395,6 +1519,17 @@ def render_page(url, max_chars=9000, wait_ms=12000, keyword=""):
     text = _html_to_text(html)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     result = {"url": url, "title": title[:200], "text": text[:max_chars]}
+    platform = _recruit_platform(url)
+    if platform:
+        result["platform"] = platform["name"]
+    if len(text.strip()) < 40:
+        # 空壳页:多为站点已下线或内容未渲染出来,与“需登录”是两回事,必须区分开
+        result["unreachable"] = True
+        result["note"] = "该页面没有正文内容(站点可能已下线或未渲染出内容),请改用其他候选入口,不要据此判断该公司没有岗位。"
+        return result
+    campus = _find_campus_url(html, url, platform)
+    if campus:
+        result["campus_url"] = campus
     # 方案3:失效职位检测
     if re.search(
         r"(该职位已失效|职位已失效|该岗位已失效|岗位已失效|职位已过期|已失效|已下线|"
@@ -1493,6 +1628,62 @@ def _find_bili():
     return cand if os.path.isfile(cand) else None
 
 
+_CLI_ENCODINGS_CACHE = None
+
+
+def _cli_output_encodings():
+    """解码外部命令行工具输出时,按优先级依次尝试的编码。
+
+    两个系统的差异:
+      - Linux / macOS:命令行程序统一输出 UTF-8;
+      - Windows:程序默认按控制台代码页输出,且随区域变化(中文=GBK/cp936、
+        繁体=Big5、日文=cp932、西欧=cp1252),写成固定一种会在别的区域出错。
+    调用方已通过 PYTHONUTF8/PYTHONIOENCODING 尽量要求子进程输出 UTF-8,所以
+    UTF-8 永远排第一;其后依次是“本机代码页 → 常见东亚编码”兜底。
+    """
+    global _CLI_ENCODINGS_CACHE
+    if _CLI_ENCODINGS_CACHE is not None:
+        return _CLI_ENCODINGS_CACHE
+    cands = ["utf-8"]
+    if os.name == "nt":
+        cands.append(locale.getpreferredencoding(False))   # 本机控制台代码页,如 cp936
+    cands += ["gbk", "cp936", "big5", "cp932", "cp1252"]
+    if os.name != "nt":
+        cands.append(locale.getpreferredencoding(False))
+    result, seen = [], set()
+    for enc in cands:
+        name = (enc or "").strip()
+        if not name or name.lower() in seen:
+            continue
+        try:
+            codecs.lookup(name)
+        except LookupError:
+            continue
+        seen.add(name.lower())
+        result.append(name)
+    _CLI_ENCODINGS_CACHE = result
+    return result
+
+
+def _decode_cli_output(raw):
+    """把命令行工具的输出字节解码为文本,同时适配 Windows 与 Linux。
+
+    Windows 上 bilibili-cli 可能按控制台代码页(中文系统是 GBK)输出,而 Linux 上
+    是 UTF-8。这里按 _cli_output_encodings() 给出的顺序依次尝试:先严格按 UTF-8
+    解码,失败再退回本机代码页,避免视频标题整片变成乱码。
+    """
+    if not raw:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    for enc in _cli_output_encodings():
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("utf-8", "replace")
+
+
 def _bilibili_search_cli(query, max_candidates=10, timeout=30):
     """用 bilibili-cli(官方 API,无需登录)搜索视频,返回 {title,url,view} 列表。
 
@@ -1503,14 +1694,18 @@ def _bilibili_search_cli(query, max_candidates=10, timeout=30):
     if not exe:
         raise RuntimeError("未安装 bilibili-cli,请先 pip install bilibili-cli")
     cmd = [exe, "search", query, "--type", "video", "--max", str(max_candidates), "--json"]
+    # 让子进程尽量输出 UTF-8(与 free_search 的做法一致);若它仍按系统代码页输出,下面会自动兼容
+    env = dict(os.environ)
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        proc = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         raise RuntimeError("bili 搜索超时") from None
     if proc.returncode != 0:
-        raise RuntimeError("bili 搜索失败: " + proc.stderr.decode("utf-8", "replace")[:200])
+        raise RuntimeError("bili 搜索失败: " + _decode_cli_output(proc.stderr)[:200])
     try:
-        data = json.loads(proc.stdout.decode("utf-8", "replace"))
+        data = json.loads(_decode_cli_output(proc.stdout))
     except ValueError as exc:
         raise RuntimeError("bili 搜索结果解析失败") from exc
     if not data.get("ok"):
@@ -1910,7 +2105,7 @@ def tools_spec():
             "type": "function",
             "function": {
                 "name": "render_page",
-                "description": "用 Playwright 无头浏览器渲染网页并抓取正文,专门用于 JavaScript 动态加载的页面(如公司官网招聘子页、mokahr/hotjob 等网申平台)。当 fetch_page 拿不到内容或页面为前端动态渲染时使用。返回的 jobs 是“职位标题+详情链接”对(可逐个再抓 JD),若职位已失效会带 expired=true。",
+                "description": "用 Playwright 无头浏览器渲染网页并抓取正文,专门用于 JavaScript 动态加载的页面(如公司官网招聘子页、mokahr/hotjob 等网申平台)。当 fetch_page 拿不到内容或页面为前端动态渲染时使用。返回的 jobs 是“职位标题+详情链接”对(可逐个再抓 JD),若职位已失效会带 expired=true。若该地址已失效(域名不存在或页面无正文)会带 unreachable=true,此时请换用其他候选入口,不要据此判断公司没有岗位、也不要当成“需登录”。命中招聘平台时附 platform;页面有校园招聘入口时附 campus_url(在校生优先渲染它)。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1939,7 +2134,7 @@ def tools_spec():
             "type": "function",
             "function": {
                 "name": "find_recruitment_links",
-                "description": "发掘公司真实的招聘官网/网申入口链接。先搜索\"公司名 + 校园招聘 网申 官网\",再从结果正文与官网主页导航中筛出真实招聘平台地址(如 mokahr、hotjob、careers 等)。不要在官网主页下乱猜 /zhaopin/、/talent/ 等子路径。",
+                "description": "发掘公司真实的招聘官网/网申入口链接。先搜索\"公司名 + 校园招聘 网申 官网\",再从结果正文与官网主页导航中筛出真实招聘平台地址(如 mokahr、hotjob、careers 等)。不要在官网主页下乱猜 /zhaopin/、/talent/ 等子路径。返回顺序即优先级(priority=1 最可信),已剔除打不开的死链;拿到结果后应先渲染 priority=1 的入口。",
                 "parameters": {
                     "type": "object",
                     "properties": {
