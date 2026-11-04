@@ -6,6 +6,7 @@
 
 - **多用户登录与用户记录**:首次进入填写昵称与密码(默认密码 `123`),昵称全局唯一,密码在服务端真实校验;`admin` 为管理员账号,可在“用户记录”中展开查看所有用户的提问与 AI 回复
 - **在线人数**:页面右上角以胶囊标签显示当前在线人数,约 10 秒轮询刷新一次
+- **历史对话标题**:按学校、专业、公司和岗位逐步自动命名;普通答疑使用首条有效提问。侧栏铅笔按钮可手动改名并锁定标题,“整理旧标题”支持预览后回填默认标题。整理不会改变对话时间或消息内容;旧版无归属记录由管理员整理。
 - **规划模式**:依次询问城市、学校、意向公司、意向岗位,产出大一至大四共 8 个学期的学习计划,目标可衡量,末尾附“一键导入知识图谱”入口
 - **课程视频按需查询**:生成计划时不再实时搜视频,计划表每门课右侧是蓝色“查询”按钮,点击后才针对该课程检索 B站视频,取播放量前 3 的视频/合集;查询过程在弹窗中用灰色小框展示工具调用与思考记录,弹窗可点 `_` 最小化(后台继续搜索,再点“查询/查看”可重新打开),完成后按钮变绿色“查看”
 - **公司推荐**:按「校招企业 / 城市知名机电企业 / 行业标杆」分类推荐,每家公司以灰色胶囊卡片展示企业名称、推荐理由与官方网址
@@ -36,7 +37,7 @@
 | 层级 | 技术 |
 |------|------|
 | 后端框架 | Python + FastAPI(uvicorn) |
-| 大模型 | DeepSeek `deepseek-flash`(V4.1 Flash,全部环节统一使用) |
+| 大模型 | DeepSeek `deepseek-flash`(当前版本为 DeepSeek-V4.1-Flash-1017,全部环节统一使用) |
 | 联网搜索 | 百度 / Bing / DuckDuckGo / Anspire AI Search,多引擎 RRF 合并 |
 | 浏览器自动化 | Playwright(Windows 走 `msedge`,Linux 走 `chromium`) |
 | 前端 | 原生 HTML + CSS + JavaScript(零构建) |
@@ -116,6 +117,8 @@ Windows 也可双击 `start.bat`;Linux/macOS 用一键脚本后台启动与停�
 ./stop.sh     # 停止服务
 ```
 
+克隆后仍需先安装依赖并配置 `.env`。`data/` 不纳入 Git,因此新克隆不包含竞赛榜单 `data/gb/大学生工科竞赛榜单.xlsx`、证书数据 `data/certs_data.json` 和竞赛链接 `data/competitions_links.json`;需要相应功能时请自行准备这些文件。缺少竞赛榜单时无法生成竞赛推荐,缺少证书数据时会使用内置规则回退。
+
 ### 部署到服务器
 
 - 需要对外访问时,在 `.env` 设置 `HOST=0.0.0.0`(端口由 `PORT` 控制,默认 `8000`)
@@ -168,6 +171,8 @@ mineru-models-download -m pipeline -s modelscope
 | POST | `/api/presence/ping` | 在线状态上报 |
 | GET | `/api/presence/online` | 查询在线人数 |
 | GET | `/api/sessions` | 会话列表 |
+| PATCH | `/api/sessions/{session_id}` | 手动重命名并锁定标题,需登录并校验客户端归属 |
+| GET/POST | `/api/sessions/title-backfill` | 预览 / 应用旧默认标题回填,需登录并校验客户端归属 |
 | GET | `/api/sessions/{session_id}/messages` | 会话消息 |
 | DELETE | `/api/sessions/{session_id}` | 删除会话 |
 | GET | `/api/graphs` | 图谱列表 |
@@ -217,6 +222,8 @@ mineru-models-download -m pipeline -s modelscope
 | `BOOK_SEARCH_MODEL` | 图书功能使用的模型名(预留,当前代码未调用) | `deepseek-flash` |
 | `BOOK_TIMEOUT` | 图书抓取超时(秒) | `25` |
 | `BOOK_BROWSER_CHANNEL` | 图书下载用的浏览器通道 | 自动 |
+
+浏览器通道留空时,Windows 会依次尝试 Edge、Chrome 和 Playwright Chromium,Linux 默认使用 Playwright Chromium;显式指定通道时仅使用指定项。网页渲染会校验 HTTPS 证书,并通过 `render_duration_ms` 返回耗时及通过 `error_type` 区分失败原因。服务日志还记录模型、工具和搜索引擎的耗时,便于排查慢请求。
 
 数据存储与安全:
 

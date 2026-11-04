@@ -20,7 +20,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding as sym_padding
 
 from .config import load_dotenv
-from .tools import _render_dom
+from .tools import _launch_browser, _render_dom, _wait_for_network
 
 load_dotenv()
 
@@ -480,13 +480,13 @@ def _browser_download(full_url, download_url, wait_ms=10000, timeout=90000, prog
     优先用浏览器 cookie 走 requests 流式下载以报告字节进度;若被拦截则回退到
     浏览器上下文请求(此时无字节进度,结束时置 100)。
     """
-    from playwright.sync_api import sync_playwright
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            channel=BOOK_BROWSER_CHANNEL,
-            headless=True,
-            args=[
+        browser = _launch_browser(
+            p,
+            os.environ.get("BOOK_BROWSER_CHANNEL", "").strip(),
+            [
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
@@ -502,8 +502,16 @@ def _browser_download(full_url, download_url, wait_ms=10000, timeout=90000, prog
             )
             page = ctx.new_page()
             page.goto(full_url, wait_until="domcontentloaded", timeout=timeout)
-            # 等待“Checking your browser”挑战与登录跳转完成
-            page.wait_for_timeout(wait_ms)
+            _wait_for_network(page, wait_ms)
+            # 如存在验证或登录跳转,等待提示消失,最多等待 wait_ms 毫秒。
+            try:
+                page.wait_for_function(
+                    "() => !/checking your browser|just a moment|verify you are human|请稍候|正在验证/i.test("
+                    "(document.title || '') + ' ' + (document.body ? document.body.innerText.slice(0, 1000) : ''))",
+                    timeout=max(1, wait_ms),
+                )
+            except PlaywrightTimeoutError:
+                pass
             cookies = {c["name"]: c["value"] for c in ctx.cookies()}
             # 先尝试 requests 流式下载(带 cookie + UA),可拿到真实的字节进度
             try:
@@ -512,7 +520,7 @@ def _browser_download(full_url, download_url, wait_ms=10000, timeout=90000, prog
                     headers={"User-Agent": UA, "Referer": full_url},
                     cookies=cookies,
                     stream=True,
-                    timeout=timeout,
+                    timeout=max(1, timeout / 1000),
                     allow_redirects=True,
                 ) as resp:
                     if resp.status_code == 200:

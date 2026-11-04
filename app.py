@@ -68,6 +68,22 @@ class ResetIn(BaseModel):
     session_id: str = "default"
 
 
+class ConversationRenameIn(BaseModel):
+    title: str
+    client_id: str
+
+
+class TitleChangeIn(BaseModel):
+    id: str
+    old_title: str
+    title: str
+
+
+class TitleBackfillIn(BaseModel):
+    client_id: str
+    changes: list[TitleChangeIn]
+
+
 class GraphImportIn(BaseModel):
     session_id: str = "default"
     graph: dict
@@ -568,6 +584,46 @@ def books_delete(filename: str):
 @app.get("/api/sessions")
 def sessions(q: str = "", client_id: str = ""):
     return store.list_conversations(q or None, client_id or None)
+
+
+def _title_permissions(request, client_id):
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    nickname = store.get_auth_user(token)
+    if not nickname:
+        return JSONResponse(status_code=401, content={"error": "请先登录"})
+    if not client_id or client_id not in store.get_user_clients(nickname):
+        return JSONResponse(status_code=403, content={"error": "无权操作该客户端的对话"})
+    return (store.get_user(nickname) or {}).get("role") == "admin"
+
+
+@app.get("/api/sessions/title-backfill")
+def title_backfill_preview(request: Request, client_id: str = ""):
+    permission = _title_permissions(request, client_id)
+    if isinstance(permission, JSONResponse):
+        return permission
+    return {"changes": store.preview_title_backfill(client_id, include_unowned=permission)}
+
+
+@app.post("/api/sessions/title-backfill")
+def title_backfill_apply(request: Request, body: TitleBackfillIn):
+    permission = _title_permissions(request, body.client_id)
+    if isinstance(permission, JSONResponse):
+        return permission
+    return store.apply_title_backfill([change.model_dump() for change in body.changes], body.client_id, include_unowned=permission)
+
+
+@app.patch("/api/sessions/{session_id}")
+def rename_session(session_id: str, body: ConversationRenameIn, request: Request):
+    permission = _title_permissions(request, body.client_id)
+    if isinstance(permission, JSONResponse):
+        return permission
+    try:
+        title = store.rename_conversation(session_id, body.title, body.client_id, include_unowned=permission)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    if title is None:
+        return JSONResponse(status_code=404, content={"error": "对话不存在或无权修改"})
+    return {"ok": True, "title": title, "title_locked": True}
 
 
 @app.get("/api/sessions/{session_id}/messages")

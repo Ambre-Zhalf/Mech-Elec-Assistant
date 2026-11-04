@@ -171,7 +171,7 @@ def extract_pdf(query, progress_cb=None, log_cb=None):
 #     if not exe:
 #         raise RuntimeError(
 #             "未找到本机 MinerU 命令行工具。请确认已安装完整版 MinerU "
-#             "(使用你现有的 D:\\MinerU 环境)并确保 mineru 在 PATH 中。"
+#             "并确保 mineru 在 PATH 中。"
 #         )
 #     with tempfile.TemporaryDirectory(prefix="mineru_out_") as out:
 #         log_file = tempfile.NamedTemporaryFile(

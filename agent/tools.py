@@ -14,7 +14,9 @@ import subprocess
 import sys
 import time
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 
@@ -718,6 +720,7 @@ def web_search(query, max_results=8):
     定位最准),失败后依次回退 Bing、Anspire。"""
     errors = []
     for engine in _search_engines():
+        started = time.perf_counter()
         try:
             if engine == "baidu":
                 results = _baidu_search(query, max_results=max_results)
@@ -734,6 +737,8 @@ def web_search(query, max_results=8):
             errors.append(f"{engine}: 无结果")
         except Exception as exc:
             errors.append(f"{engine}: {exc}")
+        finally:
+            print(f"[search] {engine} 耗时 {round((time.perf_counter() - started) * 1000)}ms")
     raise RuntimeError("联网搜索失败(" + "; ".join(errors) + "),请稍后重试")
 
 
@@ -1117,13 +1122,13 @@ def fetch_page(url, max_chars=6000):
 
 def _find_browser():
     """定位本机可用的 Chrome / Edge,用于无头渲染动态网页。"""
-    candidates = [
-        os.environ.get("AGENT_BROWSER_PATH", "").strip(),
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-    ]
+    candidates = [os.environ.get("AGENT_BROWSER_PATH", "").strip()]
+    for root in (os.environ.get("PROGRAMFILES"), os.environ.get("PROGRAMFILES(X86)"), os.environ.get("LOCALAPPDATA")):
+        if root:
+            candidates.extend([
+                os.path.join(root, "Google", "Chrome", "Application", "chrome.exe"),
+                os.path.join(root, "Microsoft", "Edge", "Application", "msedge.exe"),
+            ])
     for path in candidates:
         if path and os.path.isfile(path):
             return path
@@ -1186,192 +1191,268 @@ def _render_dom(url, wait_ms=12000, timeout=50, profile=None):
     raise RuntimeError("浏览器未能返回页面内容,请稍后重试")
 
 
-def _render_dom_playwright(url, wait_ms=12000, timeout=50):
-    """用 Playwright 驱动 Edge/Chrome 渲染页面,返回渲染后的 HTML。
+_BROWSER_SESSION = threading.local()
 
-    专用于 render_page;图书搜索使用的 _render_dom 保持原样,不受影响。
-    Playwright 能等待异步 XHR、支持 SPA hash 路由,从而抓到动态加载的正文。
-    """
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise RuntimeError("未安装 Playwright,请先 pip install playwright") from exc
 
-    channel = os.environ.get("AGENT_BROWSER_CHANNEL", _DEFAULT_BROWSER_CHANNEL).strip() or _DEFAULT_BROWSER_CHANNEL
-    html = ""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            channel=channel,
-            headless=True,
-            args=[
-                "--disable-gpu",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-infobars",
-                "--disable-background-networking",
-                "--lang=zh-CN",
-                "--window-size=1920,1080",
-            ],
-        )
-        context = browser.new_context(
-            user_agent=UA,
-            viewport={"width": 1920, "height": 1080},
-            locale="zh-CN",
-            timezone_id="Asia/Shanghai",
-            ignore_https_errors=True,
-        )
-        # 隐藏 webdriver 痕迹,缓解部分反爬(方案4)
-        context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-        )
-        page = context.new_page()
+class _PageRenderError(RuntimeError):
+    """浏览器渲染失败及可供调用方判断的错误类型。"""
+
+    def __init__(self, kind, message):
+        super().__init__(message)
+        self.kind = kind
+
+
+def _launch_browser(playwright, configured_channel, args):
+    """未显式指定通道时,按平台尝试可用的浏览器。"""
+    channels = [configured_channel] if configured_channel else (
+        ["msedge", "chrome", "chromium"] if os.name == "nt" else ["chromium"]
+    )
+    last_error = None
+    for channel in channels:
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=int(timeout * 1000))
+            return playwright.chromium.launch(channel=channel, headless=True, args=args)
+        except Exception as exc:
+            last_error = exc
+    raise last_error
+
+
+class _BrowserSession:
+    """只在当前线程和当前任务内复用浏览器。"""
+
+    def __init__(self):
+        self.playwright = None
+        self.browser = None
+
+    def get_browser(self):
+        if self.browser is None:
             try:
-                page.wait_for_load_state("networkidle", timeout=int(wait_ms))
-            except Exception:
-                pass
-            page.wait_for_timeout(1500)
-            html = page.content()
+                from playwright.sync_api import sync_playwright
+
+                self.playwright = sync_playwright().start()
+                channel = os.environ.get("AGENT_BROWSER_CHANNEL", "").strip()
+                self.browser = _launch_browser(
+                    self.playwright,
+                    channel,
+                    [
+                        "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage",
+                        "--disable-blink-features=AutomationControlled", "--no-first-run",
+                        "--no-default-browser-check", "--disable-infobars",
+                        "--disable-background-networking", "--lang=zh-CN", "--window-size=1920,1080",
+                    ],
+                )
+            except Exception as exc:
+                self.close()
+                raise _PageRenderError("browser_error", f"浏览器启动失败({type(exc).__name__})") from exc
+        return self.browser
+
+    def close(self):
+        try:
+            if self.browser is not None:
+                self.browser.close()
         except Exception:
-            html = ""
+            pass
+        try:
+            if self.playwright is not None:
+                self.playwright.stop()
+        except Exception:
+            pass
+        self.browser = None
+        self.playwright = None
+
+
+@contextmanager
+def browser_session():
+    """复用同一线程内的任务会话,未开启时仅为当前调用创建。"""
+    current = getattr(_BROWSER_SESSION, "current", None)
+    if current is not None:
+        yield current
+        return
+    session = _BrowserSession()
+    _BROWSER_SESSION.current = session
+    try:
+        yield session
+    finally:
+        try:
+            session.close()
         finally:
+            del _BROWSER_SESSION.current
+
+
+def _render_error(exc):
+    detail = str(exc).lower()
+    if any(marker in detail for marker in ("err_cert", "err_ssl", "certificate", "ssl_error")):
+        return _PageRenderError("certificate_error", "网页证书验证失败")
+    if "timeout" in type(exc).__name__.lower() or "timeout" in detail or "timed out" in detail:
+        return _PageRenderError("timeout", "浏览器加载页面超时")
+    return _PageRenderError("navigation_error", f"浏览器渲染失败({type(exc).__name__})")
+
+
+def _wait_for_network(page, wait_ms):
+    """等待网络短暂空闲,长连接页面最多等待四秒。"""
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    try:
+        page.wait_for_load_state("networkidle", timeout=max(1, min(wait_ms, 4000)))
+    except PlaywrightTimeoutError:
+        pass
+
+
+def _wait_for_job_links(page, wait_ms):
+    """招聘页面等待职位链接出现,避免过早读取动态列表。"""
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    selector = (
+        'a[href*="/job/"], a[href*="/jobs"], a[href*="#/job"], '
+        'a[href*="jobId=" i], a[href*="positionId=" i], '
+        '[data-href*="/job/"], [data-url*="/job/"]'
+    )
+    try:
+        page.locator(selector).first.wait_for(state="attached", timeout=max(1, min(wait_ms, 3000)))
+    except PlaywrightTimeoutError:
+        pass
+
+
+def _render_dom_playwright_common(url, wait_ms=12000, timeout=50, keyword=""):
+    try:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        with browser_session() as session:
+            browser = session.get_browser()
+            context = browser.new_context(
+                user_agent=UA,
+                viewport={"width": 1920, "height": 1080},
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+            )
             try:
+                context.add_init_script(
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                )
+                page = context.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=int(timeout * 1000))
+                _wait_for_network(page, wait_ms)
+                if keyword:
+                    selector = ', '.join((
+                        'input[type="search"]', 'input[placeholder*="搜索"]',
+                        'input[placeholder*="岗位"]', 'input[placeholder*="职位"]',
+                        'input[placeholder*="关键词"]', 'input[placeholder*="keyword" i]',
+                        'input[placeholder*="job" i]',
+                    ))
+                    searcher = page.locator(selector).first
+                    try:
+                        searcher.wait_for(state="visible", timeout=max(1, min(wait_ms, 3000)))
+                    except PlaywrightTimeoutError:
+                        pass
+                    else:
+                        searcher.fill(keyword)
+                        searcher.press("Enter")
+                        _wait_for_network(page, wait_ms)
+                        _wait_for_job_links(page, wait_ms)
+                elif re.search(r"招聘|职位|岗位|careers?|jobs?", page.title(), re.I):
+                    _wait_for_job_links(page, wait_ms)
+                html = page.content()
+                if not html or not html.strip():
+                    raise _PageRenderError("empty_response", "浏览器未返回页面内容")
+                return html
+            finally:
                 context.close()
-            except Exception:
-                pass
-            try:
-                browser.close()
-            except Exception:
-                pass
-    return html
+    except _PageRenderError:
+        raise
+    except Exception as exc:
+        raise _render_error(exc) from exc
+
+
+def _render_dom_playwright(url, wait_ms=12000, timeout=50):
+    """使用当前任务的浏览器渲染页面。"""
+    return _render_dom_playwright_common(url, wait_ms=wait_ms, timeout=timeout)
 
 
 def _render_dom_playwright_search(url, keyword, wait_ms=12000, timeout=50):
-    """用 Playwright 打开招聘页,若存在搜索框则自动输入 keyword 并回车,等结果渲染后返回 HTML。
+    """渲染页面,必要时在搜索框输入岗位关键词。"""
+    return _render_dom_playwright_common(url, wait_ms=wait_ms, timeout=timeout, keyword=keyword)
 
-    针对“只能通过搜索框定向查询岗位”的 SPA 招聘页(方案1)。定位不到搜索框时返回原始渲染 HTML。
-    """
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise RuntimeError("未安装 Playwright,请先 pip install playwright") from exc
 
-    channel = os.environ.get("AGENT_BROWSER_CHANNEL", _DEFAULT_BROWSER_CHANNEL).strip() or _DEFAULT_BROWSER_CHANNEL
-    html = ""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            channel=channel,
-            headless=True,
-            args=[
-                "--disable-gpu",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-infobars",
-                "--disable-background-networking",
-                "--lang=zh-CN",
-                "--window-size=1920,1080",
-            ],
-        )
-        context = browser.new_context(
-            user_agent=UA,
-            viewport={"width": 1920, "height": 1080},
-            locale="zh-CN",
-            timezone_id="Asia/Shanghai",
-            ignore_https_errors=True,
-        )
-        context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-        )
-        page = context.new_page()
-        try:
-            page.goto(url, wait_until="domcontentloaded", timeout=int(timeout * 1000))
-            try:
-                page.wait_for_load_state("networkidle", timeout=int(min(wait_ms, 8000)))
-            except Exception:
-                pass
-            page.wait_for_timeout(1000)
-            # 尝试定位岗位搜索框(招聘站常用 placeholder/name)
-            searcher = None
-            for sel in (
-                'input[type="search"]',
-                'input[placeholder*="搜索"]',
-                'input[placeholder*="岗位"]',
-                'input[placeholder*="职位"]',
-                'input[placeholder*="关键词"]',
-                'input[placeholder*="keyword" i]',
-                'input[placeholder*="job" i]',
-            ):
-                try:
-                    if page.locator(sel).count() > 0:
-                        searcher = page.locator(sel).first
-                        break
-                except Exception:
-                    continue
-            if searcher is not None:
-                try:
-                    searcher.fill(keyword)
-                    searcher.press("Enter")
-                    try:
-                        page.wait_for_load_state("networkidle", timeout=int(wait_ms))
-                    except Exception:
-                        pass
-                    page.wait_for_timeout(1500)
-                except Exception:
-                    pass
-            html = page.content()
-        except Exception:
-            html = ""
-        finally:
-            try:
-                context.close()
-            except Exception:
-                pass
-            try:
-                browser.close()
-            except Exception:
-                pass
-    return html
+class _JobLinkParser(HTMLParser):
+    """读取页面中实际存在的职位链接及其可见标题。"""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.links = []
+        self.current = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag not in ("a", "button") or self.current is not None:
+            return
+        attrs = dict(attrs)
+        href = attrs.get("href") or attrs.get("data-href") or attrs.get("data-url")
+        if href:
+            self.current = {"tag": tag, "href": href, "title": [],
+                            "label": attrs.get("aria-label") or attrs.get("title") or ""}
+
+    def handle_data(self, data):
+        if self.current is not None:
+            self.current["title"].append(data)
+
+    def handle_endtag(self, tag):
+        if self.current is not None and self.current["tag"] == tag:
+            title = _clean_text(" ".join(self.current["title"])) or self.current["label"]
+            self.links.append((self.current["href"], title))
+            self.current = None
 
 
 def _collect_jobs(html, url):
-    """从渲染后的列表页提取“职位标题 + 详情链接”对,供 Agent 逐个打开抓 JD。
-
-    除通用特征外,命中招聘平台适配表时还会补上该平台自己的职位链接特征
-    (如 mokahr 的 `#/job/`),避免因各站点 URL 形态不同而漏掉岗位。
-    """
-    keys = ["jobid=", "/jobs", "#/job", "positionid", "job-detail"]
+    """从页面链接和 JobPosting 结构化数据中提取职位,不推测详情地址。"""
+    keys = ["jobid=", "/jobs", "/job/", "#/job", "positionid", "/positions/", "job-detail"]
     platform = _recruit_platform(url)
     if platform:
-        keys += [k for k in platform.get("job_patterns", ()) if k not in keys]
+        keys += [key for key in platform.get("job_patterns", ()) if key not in keys]
     jobs = []
     seen = set()
-    parsed = urlparse(url)
-    origin = f"{parsed.scheme}://{parsed.netloc}"
-    for match in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html, re.S):
-        href = html_mod.unescape(match.group(1)).strip()
-        low = href.lower()
-        if low.startswith(("javascript", "mailto:", "tel:")):
+
+    def add(href, title, structured=False):
+        if not isinstance(href, str):
+            return
+        href = html_mod.unescape(href).strip()
+        if not href:
+            return
+        if href.lower().startswith(("javascript:", "mailto:", "tel:")):
+            return
+        if not structured and not any(key in href.lower() for key in keys):
+            return
+        absolute = urljoin(url, href)
+        if not absolute.startswith(("http://", "https://")) or absolute in seen:
+            return
+        seen.add(absolute)
+        jobs.append({"title": _clean_text(str(title or ""))[:80], "url": absolute})
+
+    parser = _JobLinkParser()
+    parser.feed(html)
+    for href, title in parser.links:
+        add(href, title)
+
+    def collect_postings(value):
+        if isinstance(value, list):
+            for item in value:
+                collect_postings(item)
+        elif isinstance(value, dict):
+            kinds = value.get("@type", [])
+            if isinstance(kinds, str):
+                kinds = [kinds]
+            elif not isinstance(kinds, list):
+                kinds = []
+            if any(isinstance(kind, str) and kind.rsplit("/", 1)[-1] == "JobPosting" for kind in kinds):
+                add(value.get("url"), value.get("title"), structured=True)
+            for item in value.values():
+                if isinstance(item, (dict, list)):
+                    collect_postings(item)
+
+    for match in re.finditer(r"<script\b([^>]*)>(.*?)</script\s*>", html, re.I | re.S):
+        if not re.search(r"type\s*=\s*['\"]application/ld\+json['\"]", match.group(1), re.I):
             continue
-        if not any(k in low for k in keys):
+        try:
+            collect_postings(json.loads(match.group(2)))
+        except (ValueError, TypeError):
             continue
-        if href in seen:
-            continue
-        seen.add(href)
-        title = _clean_text(re.sub(r"<[^>]+>", "", match.group(2)))
-        if href.startswith("//"):
-            href = "https:" + href
-        elif href.startswith("/"):
-            href = urljoin(origin, href)
-        elif href.startswith("#"):
-            href = urljoin(url, href)
-        jobs.append({"title": title[:80], "url": href})
     return jobs[:20]
 
 
@@ -1468,13 +1549,12 @@ def _is_login_wall(url):
 def _find_campus_url(html, url, platform=None):
     """从页面导航里找出“校园招聘”入口链接(校招岗位对在校生才有意义)。"""
     keys = (platform or {}).get("campus_keys", ("校园招聘", "校招"))
-    for m in re.finditer(r'<a\b[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, re.S | re.I):
-        text = _clean_text(re.sub(r"<[^>]+>", "", m.group(2)))
+    parser = _JobLinkParser()
+    parser.feed(html)
+    for href, text in parser.links:
         if not text or not any(k in text for k in keys):
             continue
-        href = html_mod.unescape(m.group(1)).strip()
-        if href.startswith(("#", "/")):
-            href = urljoin(url, href)
+        href = urljoin(url, html_mod.unescape(href).strip())
         if href.startswith(("http://", "https://")):
             return href
     return ""
@@ -1486,24 +1566,32 @@ def render_page(url, max_chars=9000, wait_ms=12000, keyword=""):
     专用于前端动态渲染的招聘页。返回 {url,title,text};
     若页面含职位详情链接则附 jobs;若职位失效则附 expired=true;
     若页面为“只能通过搜索框定向查询”的 SPA 招聘页,附 needs_keyword=true;
-    若域名无法解析或页面没有正文,附 unreachable=true(表示该地址已失效,应改用其他入口);
+    域名无法解析时附 unreachable=true;其他失败通过 error_type 标识,不能据此判定站点已下线;
     命中招聘平台适配表时附 platform,页面存在校园招聘入口时附 campus_url。
     keyword 非空时会自动在页面搜索框输入岗位关键词并回车(方案1/2),等待结果渲染再返回。
     Playwright 不可用时回退到旧渲染方式。
     """
+    started = time.perf_counter()
+
+    def finish(result):
+        result["render_duration_ms"] = round((time.perf_counter() - started) * 1000)
+        return result
+
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     # 先做域名解析校验:已下线的招聘子域直接判定不可用,既省掉一次渲染,
     # 也避免空壳页被误判成“需登录”而让 Agent 放弃官方渠道。
     if not _url_resolves(url):
-        return {
+        return finish({
             "url": url,
             "title": "",
             "text": "",
             "unreachable": True,
-            "note": "该域名无法解析(地址有误或站点已下线),请改用 find_recruitment_links 返回的其他候选入口,不要据此判断该公司没有岗位。",
-        }
+            "error_type": "dns_error",
+            "note": "域名本次未能解析,可能是地址错误或网络问题,请尝试其他候选入口。",
+        })
     kw = (keyword or "").strip()
+    render_method = "playwright"
     try:
         if kw:
             html = _render_dom_playwright_search(url, kw, wait_ms=wait_ms)
@@ -1512,21 +1600,41 @@ def render_page(url, max_chars=9000, wait_ms=12000, keyword=""):
         else:
             html = _render_dom_playwright(url, wait_ms=wait_ms)
     except Exception as exc:
-        print(f"[tools] render_page Playwright 失败,回退到 _render_dom: {exc}")
-        html = _render_dom(url, wait_ms=wait_ms)
+        error = exc if isinstance(exc, _PageRenderError) else _render_error(exc)
+        if error.kind == "certificate_error":
+            return finish({"url": url, "title": "", "text": "", "error_type": error.kind,
+                           "note": "网页证书验证失败,请检查网址和证书。"})
+        try:
+            html = _render_dom(url, wait_ms=wait_ms, timeout=20)
+            render_method = "browser_fallback"
+        except Exception:
+            return finish({"url": url, "title": "", "text": "", "error_type": error.kind,
+                           "note": f"{error};备用浏览器也未能获取页面。"})
+    cert_error = r"ERR_CERT_|ERR_SSL_|your connection is not private|证书(?:无效|错误)"
+    if (render_method == "playwright" and not re.search(cert_error, html, re.I)
+            and len(_html_to_text(html).strip()) < 40):
+        try:
+            fallback_html = _render_dom(url, wait_ms=wait_ms, timeout=20)
+            if len(_html_to_text(fallback_html).strip()) >= 40:
+                html = fallback_html
+                render_method = "browser_fallback"
+        except Exception:
+            pass
+    if re.search(cert_error, html, re.I):
+        return finish({"url": url, "title": "", "text": "", "error_type": "certificate_error",
+                       "note": "网页证书验证失败,请检查网址和证书。"})
     title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
     title = _clean_text(re.sub(r"<[^>]+>", "", title_match.group(1))) if title_match else ""
     text = _html_to_text(html)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    result = {"url": url, "title": title[:200], "text": text[:max_chars]}
+    result = {"url": url, "title": title[:200], "text": text[:max_chars], "render_method": render_method}
     platform = _recruit_platform(url)
     if platform:
         result["platform"] = platform["name"]
     if len(text.strip()) < 40:
-        # 空壳页:多为站点已下线或内容未渲染出来,与“需登录”是两回事,必须区分开
-        result["unreachable"] = True
-        result["note"] = "该页面没有正文内容(站点可能已下线或未渲染出内容),请改用其他候选入口,不要据此判断该公司没有岗位。"
-        return result
+        result["error_type"] = "empty_content"
+        result["note"] = "页面正文过少,可能未加载完成;无法据此判断站点下线或没有岗位。"
+        return finish(result)
     campus = _find_campus_url(html, url, platform)
     if campus:
         result["campus_url"] = campus
@@ -1559,7 +1667,7 @@ def render_page(url, max_chars=9000, wait_ms=12000, keyword=""):
             host = _url_host(url)
             if host:
                 _JOB_SEARCH_MEMO[host] = True
-    return result
+    return finish(result)
 
 
 def _bilibili_page_info(bvid):
@@ -1842,13 +1950,14 @@ def search_company_website(company, timeout=120):
     user = f"请定位公司“{query}”的官方网站，输出其官方网址（一行，http/https 开头）。"
 
     def job():
-        return run_agent(
-            _COMPANY_WEB_SYSTEM,
-            user,
-            tools=tool_specs,
-            max_steps=3,
-            max_tokens=4096,
-        )
+        with browser_session():
+            return run_agent(
+                _COMPANY_WEB_SYSTEM,
+                user,
+                tools=tool_specs,
+                max_steps=3,
+                max_tokens=4096,
+            )
 
     from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
     ex = ThreadPoolExecutor(max_workers=1)
@@ -1918,47 +2027,31 @@ def _render_bilibili_search_pinia(search_url, wait_ms=12000, timeout=50):
     """用 Playwright 无头浏览器(拟人化,借鉴图书搜索)渲染 B 站搜索页,
     返回 window.__pinia 的 JSON 字符串(内含搜索结果数组)。"""
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     except ImportError as exc:
         raise RuntimeError("未安装 Playwright,请先 pip install playwright") from exc
 
-    channel = os.environ.get("AGENT_BROWSER_CHANNEL", _DEFAULT_BROWSER_CHANNEL).strip() or _DEFAULT_BROWSER_CHANNEL
     pinia = ""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            channel=channel,
-            headless=True,
-            args=[
-                "--disable-gpu",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-infobars",
-                "--disable-background-networking",
-                "--lang=zh-CN",
-                "--window-size=1920,1080",
-            ],
-        )
-        context = browser.new_context(
+    with browser_session() as session:
+        context = session.get_browser().new_context(
             user_agent=UA,
             viewport={"width": 1920, "height": 1080},
             locale="zh-CN",
             timezone_id="Asia/Shanghai",
-            ignore_https_errors=True,
         )
-        context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-        )
-        page = context.new_page()
         try:
+            context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
+            page = context.new_page()
             page.goto(search_url, wait_until="domcontentloaded", timeout=int(timeout * 1000))
             try:
-                page.wait_for_load_state("networkidle", timeout=int(wait_ms))
-            except Exception:
+                page.wait_for_function(
+                    "() => window.__pinia && JSON.stringify(window.__pinia).includes('\\\"bvid\\\"')",
+                    timeout=max(1, int(wait_ms)),
+                )
+            except PlaywrightTimeoutError:
                 pass
-            page.wait_for_timeout(1500)
             pinia = page.evaluate(
                 "() => { try { return JSON.stringify(window.__pinia); } catch(e){ return null; } }"
             ) or ""
@@ -1967,10 +2060,6 @@ def _render_bilibili_search_pinia(search_url, wait_ms=12000, timeout=50):
         finally:
             try:
                 context.close()
-            except Exception:
-                pass
-            try:
-                browser.close()
             except Exception:
                 pass
     return pinia
@@ -2105,7 +2194,7 @@ def tools_spec():
             "type": "function",
             "function": {
                 "name": "render_page",
-                "description": "用 Playwright 无头浏览器渲染网页并抓取正文,专门用于 JavaScript 动态加载的页面(如公司官网招聘子页、mokahr/hotjob 等网申平台)。当 fetch_page 拿不到内容或页面为前端动态渲染时使用。返回的 jobs 是“职位标题+详情链接”对(可逐个再抓 JD),若职位已失效会带 expired=true。若该地址已失效(域名不存在或页面无正文)会带 unreachable=true,此时请换用其他候选入口,不要据此判断公司没有岗位、也不要当成“需登录”。命中招聘平台时附 platform;页面有校园招聘入口时附 campus_url(在校生优先渲染它)。",
+                "description": "用 Playwright 无头浏览器渲染动态页面并抓取正文。jobs 为职位标题及详情链接,expired=true 表示职位失效。unreachable=true 表示域名本次未能解析;error_type 区分证书、超时、浏览器、导航和空内容错误,不能据此判定站点下线或没有岗位。命中招聘平台时附 platform,页面有校园招聘入口时附 campus_url。render_duration_ms 为本次耗时。",
                 "parameters": {
                     "type": "object",
                     "properties": {

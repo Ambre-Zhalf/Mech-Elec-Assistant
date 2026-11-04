@@ -12,6 +12,12 @@ from datetime import datetime, timedelta
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "agent.db")
+TITLE_MAX_LENGTH = 60
+_DEFAULT_TITLES = {"", "开始", "开始吧", "新对话", "新学习规划", "你好", "您好", "确认", "好的", "好", "嗯", "ok"}
+
+
+def _default_title(title):
+    return (title or "").strip().strip("。！!？?，,.").lower() in _DEFAULT_TITLES
 
 
 def _conn():
@@ -67,6 +73,12 @@ def _init(conn):
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(conversations)").fetchall()}
     if "client_id" not in cols:
         conn.execute("ALTER TABLE conversations ADD COLUMN client_id TEXT NOT NULL DEFAULT ''")
+    if "title_locked" not in cols:
+        conn.execute("ALTER TABLE conversations ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0")
+        # 旧版已有的有效标题保持原样,只将默认标题交给自动命名和回填。
+        for row in conn.execute("SELECT session_id, title FROM conversations").fetchall():
+            if not _default_title(row["title"]):
+                conn.execute("UPDATE conversations SET title_locked=1 WHERE session_id=?", (row["session_id"],))
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS messages(
@@ -248,6 +260,124 @@ def delete_conversation(session_id):
 
 # ---------- 历史对话 ----------
 
+def _conversation_title(conn, conversation, backfill=False):
+    session_id = conversation["session_id"]
+    row = conn.execute("SELECT state FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    try:
+        state = json.loads(row["state"]) if row else {}
+    except (ValueError, TypeError):
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    profile = dict(conn.execute("SELECT key, value FROM profile WHERE session_id=?", (session_id,)).fetchall())
+    fields = {}
+    for field, profile_key in (("school", "user_school"), ("major", "user_major"),
+                               ("company", "target_company"), ("job", "target_job")):
+        value = state.get(field) or profile.get(profile_key) or ""
+        fields[field] = str(value).strip() if value else ""
+    # 旧会话可能仅在助手回复中保存了档案摘要。
+    if not all(fields.values()) and (state.get("step") or backfill or _default_title(conversation["title"])):
+        summaries = conn.execute(
+            "SELECT substr(content, 1, 2500) AS content FROM messages "
+            "WHERE session_id=? AND role='assistant' ORDER BY id DESC LIMIT 30", (session_id,)
+        ).fetchall()
+        labels = {"school": "学校", "major": "专业", "company": "意向公司|目标公司", "job": "意向岗位|目标岗位"}
+        for summary in summaries:
+            for field, label in labels.items():
+                if fields[field]:
+                    continue
+                match = re.search(r"(?:\*\*)?(?:" + label + r")(?:\*\*)?\s*[:：=]\s*([^\n|｜<>]+)", summary["content"])
+                if match:
+                    value = re.split(r"\s+(?:\*\*)?(?:学校|学历|专业|城市|意向公司|意向岗位)(?:\*\*)?\s*[:：=]", match[1])[0].strip(" *`。")
+                    if value not in ("无", "暂无", "未记录", "XXX"):
+                        fields[field] = value
+    school, major, company, job = (fields[key] for key in ("school", "major", "company", "job"))
+    if company and job:
+        title = f"{company} · {job}"
+    elif company:
+        title = f"{company} · 求职规划"
+    elif job:
+        title = f"{job} · 学习规划"
+    elif major:
+        title = f"{major} · 职业规划"
+    elif school:
+        title = f"{school} · 学习规划"
+    else:
+        title = ""
+        replies = conn.execute(
+            "SELECT substr(content, 1, 500) AS content FROM messages "
+            "WHERE session_id=? AND role='user' ORDER BY id", (session_id,)
+        ).fetchall()
+        short_answers = {"确认无误", "是", "是的", "对", "没错", "正确", "普通本科", "职业本科", "本科", "专科", "硕士", "博士"}
+        for reply in replies:
+            text = re.sub(r"\s+", " ", reply["content"]).strip()
+            if _default_title(text) or text in short_answers or re.fullmatch(r"[0-9一二三四五六七八九十]+年?", text):
+                continue
+            title = text
+            break
+        if not title:
+            title = "学习规划 · " + conversation["created_at"][5:16] if backfill else "新学习规划"
+    return re.sub(r"\s+", " ", title).strip()[:TITLE_MAX_LENGTH]
+
+
+def _title_scope(client_id, include_unowned):
+    if client_id is None:
+        return "1=1", []
+    return ("(client_id=? OR client_id='')" if include_unowned else "client_id=?"), [client_id]
+
+
+def preview_title_backfill(client_id=None, include_unowned=False):
+    conn = _conn()
+    try:
+        scope, params = _title_scope(client_id, include_unowned)
+        rows = conn.execute(f"SELECT * FROM conversations WHERE title_locked=0 AND {scope} ORDER BY created_at", params).fetchall()
+        return [
+            {"id": row["session_id"], "old_title": row["title"], "title": _conversation_title(conn, row, backfill=True)}
+            for row in rows if _default_title(row["title"])
+        ]
+    finally:
+        conn.close()
+
+
+def apply_title_backfill(changes, client_id=None, include_unowned=False):
+    conn = _conn()
+    updated = 0
+    try:
+        scope, params = _title_scope(client_id, include_unowned)
+        with conn:
+            for change in changes:
+                row = conn.execute(f"SELECT * FROM conversations WHERE session_id=? AND title_locked=0 AND {scope}",
+                                   [change["id"], *params]).fetchone()
+                if (not row or not _default_title(row["title"]) or row["title"] != change["old_title"]
+                        or _conversation_title(conn, row, backfill=True) != change["title"]):
+                    continue
+                cursor = conn.execute(
+                    f"UPDATE conversations SET title=? WHERE session_id=? AND title=? AND title_locked=0 AND {scope}",
+                    [change["title"], change["id"], change["old_title"], *params],
+                )
+                updated += cursor.rowcount
+        return {"updated": updated, "skipped": len(changes) - updated}
+    finally:
+        conn.close()
+
+
+def rename_conversation(session_id, title, client_id, include_unowned=False):
+    title = re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", title or "")).strip()
+    if not title or len(title) > TITLE_MAX_LENGTH:
+        raise ValueError(f"标题需为 1～{TITLE_MAX_LENGTH} 个字符")
+    conn = _conn()
+    try:
+        scope, params = _title_scope(client_id, include_unowned)
+        with conn:
+            cursor = conn.execute(
+                f"UPDATE conversations SET title=?, title_locked=1 WHERE session_id=? AND {scope}",
+                [title, session_id, *params],
+            )
+        return title if cursor.rowcount else None
+    finally:
+        conn.close()
+
+
 def add_message(session_id, role, content, mode="plan", think="", think_time=None):
     """记录一条对话消息(带模式标记与思考过程/用时),并维护会话标题与更新时间。"""
     if not content:
@@ -273,6 +403,10 @@ def add_message(session_id, role, content, mode="plan", think="", think_time=Non
         "INSERT INTO messages(session_id, role, content, mode, think, think_time, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
         (session_id, role, content, mode, think, think_time, now),
     )
+    conversation = conn.execute("SELECT * FROM conversations WHERE session_id=?", (session_id,)).fetchone()
+    if not conversation["title_locked"]:
+        conn.execute("UPDATE conversations SET title=? WHERE session_id=? AND title_locked=0",
+                     (_conversation_title(conn, conversation), session_id))
     conn.commit()
     conn.close()
 
@@ -313,7 +447,7 @@ def list_conversations(q=None, client_id=None):
         where.append("c.title LIKE ?")
         params.append(f"%{q}%")
     sql = (
-        "SELECT c.session_id, c.title, c.created_at, c.updated_at, "
+        "SELECT c.session_id, c.title, c.title_locked, c.created_at, c.updated_at, "
         "(SELECT COUNT(*) FROM messages m WHERE m.session_id=c.session_id) AS count "
         "FROM conversations c"
     )
@@ -326,6 +460,7 @@ def list_conversations(q=None, client_id=None):
         {
             "id": r["session_id"],
             "title": r["title"],
+            "title_locked": bool(r["title_locked"]),
             "created_at": r["created_at"],
             "updated_at": r["updated_at"],
             "count": r["count"],

@@ -1,4 +1,4 @@
 @echo off
-cd /d "D:\VScode Python Project\Agent"
+cd /d "%~dp0"
 python app.py
 pause

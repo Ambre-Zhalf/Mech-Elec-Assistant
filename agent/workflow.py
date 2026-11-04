@@ -8,10 +8,14 @@ from datetime import datetime
 
 
 from . import llm, store
-from .tools import tools_spec
+from .tools import browser_session, tools_spec
 from .competitions import recommend_competitions
 
 AGENT_TOOLS = tools_spec()
+COMPANY_JOB_TOOLS = [
+    tool for tool in AGENT_TOOLS
+    if tool["function"]["name"] != "bilibili_search"
+]
 
 PLAN_KEYWORDS = ["专业", "学校", "城市", "公司", "岗位", "职业", "就业", "求职", "offer", "校招", "春招", "秋招", "开始"]
 FOLLOWUP_MARKERS = [
@@ -417,7 +421,7 @@ SYSTEM_LIST_JOBS = """# 信息检索专家指令(含个人参数版)
 
 ### 执行约束
 - **入口顺序**:find_recruitment_links 的返回顺序即优先级,永远先渲染 priority=1 的入口,拿到 jobs 就继续抓详情;不要跳过已确认的入口去试别处,也不要凭空拼接招聘子域(如 job.公司域名)。
-- **地址已失效**:render_page 返回 unreachable=true 表示该域名不存在或页面没有正文(站点已下线),请立刻换用其他候选入口(或按其 note 提示处理);**严禁据此判断"该公司没有岗位",也不要当成"需登录"而放弃官方渠道**。
+- **地址已失效**:render_page 返回 unreachable=true 表示域名本次未能解析;error_type 区分证书、超时、浏览器、导航和空内容等问题,请立刻换用其他候选入口(或按其 note 提示处理);**严禁据此判断"该公司没有岗位",也不要当成"需登录"而放弃官方渠道**。
 - 仅使用公开且合法的官网信息,不爬取非公开页面。
 - 若招聘页面需动态加载(如 JavaScript),请改用 render_page 工具渲染后抓取正文;仅服务端渲染的静态页面用 fetch_page。
 - **严禁编造**:不得虚构或拼接任何岗位。若某公司未能通过官网/网申平台抓取到真实岗位条目,不得输出"参考性岗位画像/参考岗位"等推断性内容,只能如实说明"未能获取实时岗位",并给出已确认的官网/网申链接与替代查询路径(如官方公众号、等官网更新、高校就业网)。
@@ -748,15 +752,16 @@ def _list_companies(major, city, school, degree, memories, emit):
         "3. 与专业相切合的行业标杆企业\n"
         "4. 附上信息来源链接"
     )
-    return llm.run_agent(
-        system,
-        user,
-        tools=AGENT_TOOLS,
-        max_steps=5,
-        max_tokens=384000,
-        on_process=lambda t: _emit_process(emit, t),
-        model=llm.MODEL_PRO,
-    )
+    with browser_session():
+        return llm.run_agent(
+            system,
+            user,
+            tools=COMPANY_JOB_TOOLS,
+            max_steps=5,
+            max_tokens=384000,
+            on_process=lambda t: _emit_process(emit, t),
+            model=llm.MODEL_PRO,
+        )
 
 
 def _list_jobs(state, memories, emit):
@@ -780,15 +785,16 @@ def _list_jobs(state, memories, emit):
         f"当前日期:{today}\n\n"
         "请按照系统指令,逐一查询这些公司的官方招聘岗位信息。"
     )
-    jobs_text = llm.run_agent(
-        system,
-        user,
-        tools=AGENT_TOOLS,
-        max_steps=5,
-        max_tokens=384000,
-        on_process=lambda t: _emit_process(emit, t),
-        model=llm.MODEL_PRO,
-    )
+    with browser_session():
+        jobs_text = llm.run_agent(
+            system,
+            user,
+            tools=COMPANY_JOB_TOOLS,
+            max_steps=5,
+            max_tokens=384000,
+            on_process=lambda t: _emit_process(emit, t),
+            model=llm.MODEL_PRO,
+        )
     return _sanitize_jobs_output(jobs_text)
 
 

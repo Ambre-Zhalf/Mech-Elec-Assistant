@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 
 import requests
 
@@ -11,7 +12,7 @@ load_dotenv()
 
 API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
-# 全部环节统一使用 DeepSeek V4.1 Flash(deepseek-flash)
+# DeepSeek 官方当前将 deepseek-flash 指向 DeepSeek-V4.1-Flash-1017
 MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash").strip()
 # 历史遗留的“增强模型”变量:未配置(或在 .env 里留空)时自动与 MODEL 保持同一模型
 MODEL_PRO = os.environ.get("DEEPSEEK_MODEL_PRO", "").strip() or MODEL
@@ -40,6 +41,7 @@ def chat(messages, temperature=0.7, max_tokens=384000, tools=None, json_mode=Fal
         payload["response_format"] = {"type": "json_object"}
 
     url = f"{BASE_URL}/chat/completions"
+    started = time.perf_counter()
     try:
         resp = requests.post(
             url,
@@ -49,6 +51,8 @@ def chat(messages, temperature=0.7, max_tokens=384000, tools=None, json_mode=Fal
         )
     except requests.RequestException as exc:
         raise LlmError(f"无法连接 DeepSeek API: {exc}") from exc
+    finally:
+        print(f"[llm] 模型请求耗时 {round((time.perf_counter() - started) * 1000)}ms")
 
     if resp.status_code != 200:
         raise LlmError(f"DeepSeek API 返回错误 {resp.status_code}: {resp.text[:400]}")
@@ -127,6 +131,7 @@ def run_agent(system, user, tools=None, max_steps=6, temperature=0.7, max_tokens
     ]
     total_calls = 0
     tool_counts = {}
+    allowed_tool_names = {tool["function"]["name"] for tool in (tools or [])}
 
     def process(text):
         if on_process:
@@ -186,16 +191,21 @@ def run_agent(system, user, tools=None, max_steps=6, temperature=0.7, max_tokens
                 args = json.loads(fn.get("arguments") or "{}")
             except json.JSONDecodeError:
                 args = {}
-            process(_describe_tool(name, args))
-            print(f"[agent] 第{step + 1}步调用工具: {name}")
             handler = TOOL_REGISTRY.get(name)
             if handler is None:
                 result = {"error": f"未知工具: {name}"}
+            elif name not in allowed_tool_names:
+                result = {"error": f"当前任务未授权工具: {name}"}
             else:
+                process(_describe_tool(name, args))
+                print(f"[agent] 第{step + 1}步调用工具: {name}")
+                started = time.perf_counter()
                 try:
                     result = handler(**args)
                 except Exception as exc:
                     result = {"error": str(exc)}
+                finally:
+                    print(f"[agent] 工具 {name} 耗时 {round((time.perf_counter() - started) * 1000)}ms")
             messages.append(
                 {
                     "role": "tool",

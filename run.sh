@@ -25,7 +25,7 @@ if ! "$PY" -c "import fastapi, uvicorn" >/dev/null 2>&1; then
   echo "  conda activate myagent"
   echo "  pip install -r requirements.txt"
   echo "  ./run.sh"
-  echo "（或直接指定解释器: PYTHON=/root/miniconda3/envs/myagent/bin/python ./run.sh）"
+  echo "（或直接指定本机解释器: PYTHON=/path/to/python ./run.sh）"
   exit 1
 fi
 

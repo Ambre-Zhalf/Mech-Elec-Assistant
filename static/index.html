@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>机电学习助手</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=62">
+  <link rel="stylesheet" href="/static/style.css?v=63">
 </head>
 <body>
   <div class="app">
@@ -22,7 +22,10 @@
       </div>
 
       <div class="sidebar-body">
-        <div class="sidebar-label">历史对话</div>
+        <div class="sidebar-label sidebar-history-head">
+          <span>历史对话</span>
+          <button id="titleBackfillBtn" class="title-backfill-btn" type="button">整理旧标题</button>
+        </div>
         <div id="convList" class="conv-list"></div>
       </div>
 
@@ -266,6 +269,31 @@
     </div>
   </div>
 
+  <dialog id="conversationRenameDialog" class="conversation-dialog" aria-labelledby="conversationRenameHeading">
+    <form id="conversationRenameForm">
+      <h2 id="conversationRenameHeading">重命名对话</h2>
+      <label for="conversationTitleInput">对话标题</label>
+      <input id="conversationTitleInput" type="text" maxlength="60" required autocomplete="off">
+      <p class="conversation-dialog-hint">手动命名后，标题将保持为你设置的名称。</p>
+      <p id="conversationRenameStatus" class="conversation-dialog-status" role="status"></p>
+      <div class="conversation-dialog-actions">
+        <button id="conversationRenameCancel" type="button">取消</button>
+        <button id="conversationRenameSave" class="primary" type="submit">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="titleBackfillDialog" class="conversation-dialog" aria-labelledby="titleBackfillHeading">
+    <h2 id="titleBackfillHeading">整理旧标题</h2>
+    <p class="conversation-dialog-hint">根据已保存的学校、专业、公司和岗位生成名称。仅整理默认标题，先预览再应用。</p>
+    <ul id="titleBackfillList" class="title-backfill-list"></ul>
+    <p id="titleBackfillStatus" class="conversation-dialog-status" role="status"></p>
+    <div class="conversation-dialog-actions">
+      <button id="titleBackfillClose" type="button">关闭</button>
+      <button id="titleBackfillApply" class="primary" type="button" disabled>应用这些标题</button>
+    </div>
+  </dialog>
+
   <script src="/static/vendor/d3.min.js?v=3"></script>
   <script src="/static/graph.js?v=4"></script>
   <script>
@@ -277,6 +305,6 @@
   </script>
   <script src="/static/vendor/tex-svg.js"></script>
   <script src="/static/vendor/marked.min.js"></script>
-  <script src="/static/app.js?v=64"></script>
+  <script src="/static/app.js?v=65"></script>
 </body>
 </html>

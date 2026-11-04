@@ -829,6 +829,121 @@ async function importGraph(jsonStr, btn) {
 
 // ---------- 侧边栏:历史对话 ----------
 
+const conversationRenameDialog = document.getElementById("conversationRenameDialog");
+const conversationTitleInput = document.getElementById("conversationTitleInput");
+const conversationRenameStatus = document.getElementById("conversationRenameStatus");
+const titleBackfillDialog = document.getElementById("titleBackfillDialog");
+const titleBackfillStatus = document.getElementById("titleBackfillStatus");
+const titleBackfillApply = document.getElementById("titleBackfillApply");
+let renamingConversationId = "";
+let titleBackfillChanges = [];
+let titleBackfillVersion = 0;
+
+function titleRequestHeaders() {
+  return { "Content-Type": "application/json", Authorization: "Bearer " + authToken };
+}
+
+function openConversationRename(id) {
+  if (document.getElementById("conversationRenameSave").disabled) return;
+  const conversation = allConvs.find(c => c.id === id);
+  if (!conversation) return;
+  renamingConversationId = id;
+  conversationTitleInput.value = conversation.title || "";
+  conversationRenameStatus.textContent = "";
+  conversationRenameDialog.showModal();
+  conversationTitleInput.focus();
+  conversationTitleInput.select();
+}
+
+document.getElementById("conversationRenameCancel").addEventListener("click", () => conversationRenameDialog.close());
+document.getElementById("conversationRenameForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  const save = document.getElementById("conversationRenameSave");
+  if (save.disabled) return;
+  const title = conversationTitleInput.value.trim();
+  if (!title) {
+    conversationRenameStatus.textContent = "请输入标题";
+    return;
+  }
+  save.disabled = true;
+  const id = renamingConversationId;
+  try {
+    const response = await fetch("/api/sessions/" + encodeURIComponent(id), {
+      method: "PATCH", headers: titleRequestHeaders(), body: JSON.stringify({ title, client_id: clientId }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "重命名失败");
+    await refreshConversations();
+    if (renamingConversationId === id) conversationRenameDialog.close();
+  } catch (error) {
+    conversationRenameStatus.textContent = error.message;
+  } finally {
+    save.disabled = false;
+  }
+});
+
+document.getElementById("titleBackfillBtn").addEventListener("click", async () => {
+  const version = ++titleBackfillVersion;
+  titleBackfillChanges = [];
+  titleBackfillApply.disabled = true;
+  titleBackfillApply.textContent = "应用这些标题";
+  const list = document.getElementById("titleBackfillList");
+  list.replaceChildren();
+  titleBackfillStatus.textContent = "正在生成预览…";
+  titleBackfillDialog.showModal();
+  try {
+    const response = await fetch("/api/sessions/title-backfill?client_id=" + encodeURIComponent(clientId), {
+      headers: titleRequestHeaders(),
+    });
+    const data = await response.json();
+    if (version !== titleBackfillVersion || !titleBackfillDialog.open) return;
+    if (!response.ok) throw new Error(data.error || "预览失败");
+    titleBackfillChanges = data.changes;
+    for (const change of titleBackfillChanges) {
+      const item = document.createElement("li");
+      const old = document.createElement("span");
+      old.className = "old-title";
+      old.textContent = change.old_title;
+      const next = document.createElement("span");
+      next.textContent = "→ " + change.title;
+      item.append(old, next);
+      list.appendChild(item);
+    }
+    titleBackfillStatus.textContent = titleBackfillChanges.length
+      ? "共 " + titleBackfillChanges.length + " 条默认标题可整理"
+      : "没有需要整理的默认标题";
+    titleBackfillApply.disabled = !titleBackfillChanges.length;
+  } catch (error) {
+    if (version === titleBackfillVersion && titleBackfillDialog.open) titleBackfillStatus.textContent = error.message;
+  }
+});
+document.getElementById("titleBackfillClose").addEventListener("click", () => titleBackfillDialog.close());
+titleBackfillApply.addEventListener("click", async () => {
+  const version = titleBackfillVersion;
+  titleBackfillApply.disabled = true;
+  try {
+    const response = await fetch("/api/sessions/title-backfill", {
+      method: "POST", headers: titleRequestHeaders(),
+      body: JSON.stringify({ client_id: clientId, changes: titleBackfillChanges }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "整理失败");
+    if (version !== titleBackfillVersion || !titleBackfillDialog.open) {
+      await refreshConversations();
+      return;
+    }
+    titleBackfillStatus.textContent = "已更新 " + data.updated + " 条标题"
+      + (data.skipped ? "，跳过 " + data.skipped + " 条已变化或无权修改的记录" : "");
+    titleBackfillApply.textContent = "已完成";
+    await refreshConversations();
+  } catch (error) {
+    if (version === titleBackfillVersion && titleBackfillDialog.open) {
+      titleBackfillStatus.textContent = error.message;
+      titleBackfillApply.disabled = false;
+    }
+  }
+});
+
 function renderConvList() {
   const q = searchInput.value.trim().toLowerCase();
   const list = q
@@ -855,6 +970,7 @@ function renderConvList() {
     const title = document.createElement("div");
     title.className = "conv-title";
     title.textContent = conv.title || "新对话";
+    main.title = title.textContent;
 
     const meta = document.createElement("div");
     meta.className = "conv-meta";
@@ -862,6 +978,14 @@ function renderConvList() {
 
     main.appendChild(title);
     main.appendChild(meta);
+
+    const rename = document.createElement("button");
+    rename.type = "button";
+    rename.className = "conv-rename";
+    rename.title = "重命名对话";
+    rename.setAttribute("aria-label", "重命名对话：" + (conv.title || "新对话"));
+    rename.textContent = "✎";
+    rename.addEventListener("click", () => openConversationRename(conv.id));
 
     const del = document.createElement("button");
     del.type = "button";
@@ -872,6 +996,7 @@ function renderConvList() {
 
     main.addEventListener("click", () => loadConversation(conv.id));
     item.appendChild(main);
+    item.appendChild(rename);
     item.appendChild(del);
     convList.appendChild(item);
   }
