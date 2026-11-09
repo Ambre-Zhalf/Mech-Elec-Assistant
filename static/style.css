@@ -2689,3 +2689,35 @@ h1, h2, h3, h4 {
 .company-card.picked { border-color: rgba(18, 150, 96, .45); background: rgba(222, 245, 233, .55); }
 .job-card.picked { border-color: rgba(18, 150, 96, .45); background: rgba(222, 245, 233, .55); }
 
+
+/* 专业目录：保留全部分类与备注,每项可直接选择。 */
+.major-option {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 8px 0;
+  padding: 12px 15px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .65);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.major-option:hover, .major-option.is-selected {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+}
+.major-option:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+.major-code { font-size: .85em; font-variant-numeric: tabular-nums; color: var(--muted); }
+.major-name { overflow-wrap: anywhere; font-weight: 600; }
+.major-select-hint { color: var(--primary); font-size: .8em; white-space: nowrap; }
+@media (max-width: 600px) {
+  .major-option { grid-template-columns: 76px minmax(0, 1fr); gap: 8px; padding: 10px; }
+  .major-select-hint { display: none; }
+}

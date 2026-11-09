@@ -1329,7 +1329,7 @@ def _major_question(state, profile):
     if degree:
         head.append(f"**学历**:{degree}")
     head_text = "\n".join(head)
-    return (head_text + ("\n\n" if head_text else "")) + block + "\n\n" + hint
+    return (head_text + ("\n\n" if head_text else "")) + block + "\n\n" + hint + "\n\n请直接点击列表中的专业进行选择，也可以手动输入完整专业名称或完整专业代码（含字母后缀）。"
 
 
 def _degree_question(state, profile):
@@ -1401,6 +1401,34 @@ def _fmt_known(state, profile):
     return " ".join(parts) if parts else "暂无"
 
 
+def _resolve_major_input(text):
+    """将目录内的完整专业代码、名称或代码加名称解析为专业名称。"""
+    cleaned = (text or "").strip().strip("。！!？?，,. ")
+    compact = re.sub(r"\s+", "", cleaned).upper()
+    for catalog in (MAJOR_DB, MAJOR_DB_VOC):
+        for entries in catalog.values():
+            for entry in entries:
+                code, name = entry[:2]
+                if compact in (code.upper(), name.upper(), (code + name).upper()):
+                    return name
+    return None
+
+
+def _city_answer(text):
+    """解析正在填写的城市；未能确定的描述仍走原有语义分类。"""
+    value = (text or '').strip().rstrip('。！!，,. ').strip()
+    value = re.sub(r'^(?:(?:我的)?学校(?:位于|在)|(?:所在)?城市\s*[：:是]|我在)\s*', '', value)
+    if value in CONFIRM_WORDS or value in {'无', '未知', '好的', '随便', '跳过', '城市', '不填'}:
+        return None
+    if re.search(r'不知道|不确定|不清楚|没有|不想|不是|哪里|什么|怎么|专业|工程|大学|学院|学校', value):
+        return None
+    if re.fullmatch(r'[\u3400-\u9fff·]{2,16}', value) and (
+        len(value) <= 4 or value.endswith(('市', '县', '区', '州', '盟', '旗'))
+    ):
+        return value
+    return None
+
+
 def _classify_field(text, current, state, profile):
     """用大模型判断用户这次输入的信息实际属于哪一类(学校/城市/专业/学历/本科类型/学制)。"""
     t = (text or "").strip()
@@ -1408,6 +1436,11 @@ def _classify_field(text, current, state, profile):
     # 确认词且当前项已有档案值 → 视为确认当前项,避免额外一次模型调用
     if cleaned in CONFIRM_WORDS and (profile.get(_PROFILE_KEY[current]) or "").strip():
         return current
+    if _resolve_major_input(t):
+        return "major"
+    # 明确的学校名称直接识别,避免接口异常时反复询问同一所学校。
+    if re.fullmatch(r"[\u4e00-\u9fffA-Za-z·（）()]{2,}(?:大学|学院|学校)", cleaned):
+        return "school"
     # 数字+“年”或明确“学制”→ 学制(精确规则,不必再请求模型)
     if re.search(r"(\d+|[一二三四五六七八九十]+)\s*年|学制\s*\d|学几年", t):
         return "study_years"
@@ -1416,6 +1449,12 @@ def _classify_field(text, current, state, profile):
         return "degree_type"
     if re.fullmatch(r"(本科|专科|大专|高职|研究生|硕士|博士|学士)", cleaned):
         return "degree"
+    if current == 'city':
+        city = _city_answer(t)
+        if city and (state.get('pending') == ['city'] or city != cleaned
+                     or city.endswith(('市', '县', '区', '州', '盟', '旗'))
+                     or (state.get('school') or '').startswith(city)):
+            return 'city'
     system = (
         "你是信息分类器。用户在填写【学校/学历/专业/本科类型(职业本科或普通本科)/学制/城市】这几类信息。"
         "请根据用户这次输入内容的语义,判断它实际上属于哪一类,不要被当前正在问哪一项影响。"
@@ -1438,9 +1477,12 @@ def _classify_field(text, current, state, profile):
             max_tokens=384000,
         )
         f = (data.get("field") or "unknown").strip().lower()
+    except llm.LlmError:
+        # 交给聊天接口展示模型服务错误,不要伪装成用户输入无法识别。
+        raise
     except Exception:
         f = "unknown"
-    return f if f in _BASIC_FIELDS else "unknown"
+    return f if f in _BASIC_FIELDS or f == "degree_type" else "unknown"
 
 
 def _apply_field(state, field, text, profile, pending):
@@ -1448,9 +1490,10 @@ def _apply_field(state, field, text, profile, pending):
     if field == "school":
         state["school"] = _confirm_value(text, profile.get("user_school"))
     elif field == "city":
-        state["city"] = _confirm_value(text, profile.get("user_city"))
+        state["city"] = _city_answer(text) or _confirm_value(text, profile.get("user_city"))
     elif field == "major":
-        state["major"] = _confirm_value(text, profile.get("user_major"))
+        value = _confirm_value(text, profile.get("user_major"))
+        state["major"] = _resolve_major_input(value) or value
     elif field == "degree":
         val = _confirm_value(text, profile.get("user_degree"))
         state["degree"] = val
@@ -1513,6 +1556,19 @@ def _handle_basic_field(session_id, state, text, profile, emit, stream):
     把当前应问的类型顺延到后面,其余类型保持原有顺序。"""
     current = state.get("step") or _BASIC_FIELDS[0]
     pending = state.get("pending") or list(_BASIC_FIELDS)
+    cleaned = (text or "").strip().strip("。！!？?，,. ")
+    if current == 'city' and cleaned in CONFIRM_WORDS and not profile.get('user_city'):
+        _deliver(emit, session_id, '档案里还没有城市，请输入学校所在城市，例如“武汉”。', stream)
+        return
+    if current == "major" and re.fullmatch(r"\d{4,}[A-Za-z]*", cleaned) and not _resolve_major_input(cleaned):
+        _deliver(
+            emit, session_id,
+            "未在当前专业目录中找到这个代码，可能输入不完整或尚未收录。"
+            "请复制列表中的完整专业代码（6位数字，部分带T、K等字母后缀），"
+            "或直接输入完整专业名称。专业大类代码不能代替具体专业代码。",
+            stream,
+        )
+        return
     memories = store.search_memory(session_id, text)
     field = _classify_field(text, current, state, profile)
 
@@ -1549,7 +1605,12 @@ def _handle_basic_field(session_id, state, text, profile, emit, stream):
     else:
         # 未识别/已填过 → 温和重复当前问题
         _emit_process(emit, f"我先确认一下{_field_cn(current)}信息")
-        _deliver(emit, session_id, _question_text(current, state, profile), stream)
+        question = _question_text(current, state, profile)
+        if current == "major":
+            question = "暂未识别出你的专业，请输入完整专业名称，或复制上方列表中的完整专业代码。"
+        elif current == 'city':
+            question = '还没有识别出学校所在城市。请单独输入地名，例如“武汉”或“武汉市”。'
+        _deliver(emit, session_id, question, stream)
         return
     _advance_basic(session_id, state, pending, memories, profile, emit, stream)
 
@@ -1561,22 +1622,36 @@ def _advance_basic(session_id, state, pending, memories, profile, emit, stream):
         if "degree_type" not in pending:
             pending.insert(0, "degree_type")
     state["pending"] = pending
-    state["step"] = pending[0] if pending else ""
-    store.set_session(session_id, state)
     if not pending:
-        # 基本信息填完 → 进入公司推荐
-        _emit_process(emit, "正在检索与你匹配的目标企业(联网搜索)")
-        state["company_output"] = _list_companies(
-            state.get("major"), state.get("city"), state.get("school"), _fmt_degree(state), memories, emit
-        )
-        state["_last_gen"] = "companies"
-        state["step"] = "company"
-        store.set_session(session_id, state)
-        _deliver(emit, session_id, _company_question(state["company_output"], profile), stream)
+        _recommend_companies(session_id, state, memories, profile, emit, stream)
         return
     next_field = pending[0]
+    state['step'] = next_field
+    store.set_session(session_id, state)
     _emit_process(emit, f"正在确认你的{_field_cn(next_field)}")
     _deliver(emit, session_id, _question_text(next_field, state, profile), stream)
+
+
+def _recommend_companies(session_id, state, memories, profile, emit, stream):
+    # 联网前保存有效的流程节点，失败后可用同一份档案重试。
+    refreshing = state.get('step') == 'company' and bool(state.get('company_output'))
+    if not refreshing:
+        state.update(step='recommend_companies', _last_gen='companies')
+        store.set_session(session_id, state)
+    _emit_process(emit, '正在检索与你匹配的目标企业(联网搜索)')
+    try:
+        output = _list_companies(state.get('major'), state.get('city'), state.get('school'),
+                                 _fmt_degree(state), memories, emit)
+    except llm.LlmError:
+        if refreshing:
+            prompt = '企业推荐暂未更新，你仍可从上一份列表中选择意向公司，或点击重试。'
+        else:
+            prompt = f"已记录城市：{state.get('city')}。企业推荐服务暂时不可用，请检查模型服务后回复“重试”。"
+        _deliver(emit, session_id, prompt, stream)
+        return
+    state.update(step='company', company_output=output)
+    store.set_session(session_id, state)
+    _deliver(emit, session_id, _company_question(output, profile), stream)
 
 
 def _company_question(company_output, profile):
@@ -1679,6 +1754,13 @@ def run(session_id, text, emit=None, stream=False, mode="plan"):
 def _handle_qa(session_id, state, text, profile, emit, stream):
     step = state["step"]
     memories = store.search_memory(session_id, text)
+
+    if step == 'recommend_companies':
+        if text.strip() in {'重试', '继续', '再试一次'}:
+            _recommend_companies(session_id, state, memories, profile, emit, stream)
+        else:
+            _deliver(emit, session_id, f"已记录城市：{state.get('city')}。回复“重试”即可重新获取企业推荐。", stream)
+        return
 
     # 基本信息采集:大模型监管纠错(学校/城市/专业/学历/本科类型/学制)
     if step in _BASIC_FIELDS or step == "degree_type":
@@ -1834,15 +1916,7 @@ def retry_last(session_id, emit, stream, mode="plan"):
     memories = store.search_memory(session_id, "重新生成")
     gen = state.get("_last_gen")
     if gen == "companies":
-        _emit_process(emit, "正在重新检索与你匹配的目标企业(联网搜索)")
-        company_output = _list_companies(
-            state.get("major"), state.get("city"), state.get("school"), _fmt_degree(state), memories, emit
-        )
-        state["company_output"] = company_output
-        state["_last_gen"] = "companies"
-        state["step"] = "company"
-        store.set_session(session_id, state)
-        _deliver(emit, session_id, _company_question(company_output, profile), stream)
+        _recommend_companies(session_id, state, memories, profile, emit, stream)
         return
     if gen == "jobs":
         _emit_process(emit, "正在重新抓取目标公司的官方招聘岗位")

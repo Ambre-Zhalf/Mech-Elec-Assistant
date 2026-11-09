@@ -199,7 +199,16 @@ function renderJobCard(lines) {
   return html;
 }
 
+function renderMajorOption(code, label) {
+  return '<button type="button" class="major-option" data-major="' + escapeHtml(code) +
+    '" aria-pressed="false" title="点击选择此专业"><span class="major-code">' +
+    escapeHtml(code) + '</span><span class="major-name">' + escapeHtml(label) +
+    '</span><span class="major-select-hint" aria-hidden="true">选择 →</span></button>';
+}
+
 function renderMd(src) {
+  // 同时支持已保存的历史专业列表,无需重新开始对话。
+  const isMajorList = src.includes("专业目录") && src.includes("机电");
   const parts = src.split(/```/);
   let html = "";
   let listType = null;
@@ -266,6 +275,12 @@ function renderMd(src) {
         closeList();
         html += "<h4>" + inlineMd(l.replace(/^#+\s*/, "")) + "</h4>";
       } else if (/^[-*]\s/.test(l)) {
+        const major = isMajorList && l.match(/^[-*]\s+(\d{6}[A-Za-z]{0,2})\s+(.+)$/);
+        if (major) {
+          closeList();
+          html += renderMajorOption(major[1], major[2]);
+          continue;
+        }
         if (listType === "ol") {
           // 有序列表(如公司1/2/3)里的缩进子项:追加到当前项,保持编号连续不断
           html += "<br>" + inlineMd(l.slice(2));
@@ -1152,6 +1167,19 @@ async function searchCompanyWebsite(btn) {
 }
 
 chat.addEventListener("click", e => {
+  const major = e.target.closest(".major-option");
+  if (major) {
+    if (sendBtn.disabled) return;
+    const scope = major.closest(".bubble") || chat;
+    scope.querySelectorAll(".major-option").forEach(button => {
+      button.classList.remove("is-selected");
+      button.setAttribute("aria-pressed", "false");
+    });
+    major.classList.add("is-selected");
+    major.setAttribute("aria-pressed", "true");
+    sendAsUser(major.dataset.major);
+    return;
+  }
   const pick = e.target.closest(".pick-btn");
   if (pick) { pickCard(pick); return; }
   const sw = e.target.closest(".search-web-btn");
