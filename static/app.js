@@ -1267,19 +1267,19 @@ function renderBookResults(results) {
     if (r.extension) metaParts.push(escapeHtml(r.extension.toUpperCase()));
     if (r.filesize) metaParts.push(escapeHtml(r.filesize));
     const urlEsc = escapeHtml(url);
-    const dlEsc = escapeHtml(download);
-    const dlTitle = escapeHtml(rawTitle + (r.author ? " - " + r.author : ""));
+    // 下载按钮直接指向该书的下载页(没有下载页时退回书籍页),由浏览器自己下载
+    const target = download || url;
+    const action = target
+      ? '<a class="book-btn primary" href="' + escapeHtml(target) + '" target="_blank" rel="noopener noreferrer" title="在新标签页打开下载页">下载</a>'
+      : '<button class="book-btn primary" type="button" disabled>下载</button>';
     return '<div class="book-result-item">' +
       '<div class="book-result-main">' +
         '<div class="book-result-title">' + title + titleSuffix + '</div>' +
         (author ? '<div class="book-result-author">' + author + '</div>' : '') +
         (metaParts.length ? '<div class="book-result-meta">' + metaParts.join(" · ") + '</div>' : '') +
         '<a class="book-result-link" href="' + urlEsc + '" target="_blank" rel="noopener noreferrer">书籍页</a>' +
-        (download ? ' <span class="book-result-sep">·</span> <a class="book-result-link" href="' + dlEsc + '" target="_blank" rel="noopener noreferrer">下载页</a>' : '') +
       '</div>' +
-      '<div class="book-actions">' +
-        '<button class="book-btn primary" data-download="' + urlEsc + '" data-dlurl="' + dlEsc + '" data-title="' + dlTitle + '">下载</button>' +
-      '</div></div>';
+      '<div class="book-actions">' + action + '</div></div>';
   }).join("");
 }
 
@@ -1339,65 +1339,6 @@ async function searchBooks() {
     bookSearchBtn.disabled = false;
     bookProgress.hidden = true;
     bookSearchLog.hidden = false;
-  }
-}
-
-async function downloadBook(btn) {
-  const url = btn.dataset.download;
-  const downloadUrl = btn.dataset.dlurl || "";
-  const title = btn.dataset.title || "";
-  btn.disabled = true;
-  btn.classList.add("downloading");
-  btn.innerHTML = '<span class="dl-fill"></span><span class="dl-pct">0%</span>';
-  setBookStatus("正在登录并下载 PDF，请稍候…", false);
-  try {
-    const res = await fetch("/api/books/download", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, download_url: downloadUrl, title }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) throw new Error(data.error || "下载失败");
-    await new Promise((resolve) => {
-      const timer = setInterval(async () => {
-        try {
-          const sr = await fetch("/api/books/download/status/" + encodeURIComponent(data.task_id));
-          const st = await sr.json().catch(() => ({}));
-          if (!sr.ok) throw new Error(st.error || "获取进度失败");
-          const pct = Math.max(0, Math.min(100, Math.round(st.progress || 0)));
-          const fill = btn.querySelector(".dl-fill");
-          const pctEl = btn.querySelector(".dl-pct");
-          if (fill) fill.style.width = pct + "%";
-          if (pctEl) pctEl.textContent = pct + "%";
-          if (st.status === "done") {
-            clearInterval(timer);
-            btn.classList.remove("downloading");
-            btn.innerHTML = "已保存";
-            setBookStatus("✅ 已下载并保存：" + ((st.result && st.result.filename) || ""), false);
-            resolve();
-          } else if (st.status === "error") {
-            clearInterval(timer);
-            btn.classList.remove("downloading");
-            btn.innerHTML = "重试";
-            btn.disabled = false;
-            setBookStatus("⚠️ " + (st.error || "下载失败"), true);
-            resolve();
-          }
-        } catch (e) {
-          clearInterval(timer);
-          btn.classList.remove("downloading");
-          btn.innerHTML = "重试";
-          btn.disabled = false;
-          setBookStatus("⚠️ " + (e.message || "下载失败"), true);
-          resolve();
-        }
-      }, 700);
-    });
-  } catch (e) {
-    btn.classList.remove("downloading");
-    btn.innerHTML = "重试";
-    btn.disabled = false;
-    setBookStatus("⚠️ " + (e.message || "下载失败"), true);
   }
 }
 
@@ -1757,10 +1698,6 @@ booksMenu.querySelectorAll("[data-books]").forEach(b => {
 bookSearchBtn.addEventListener("click", searchBooks);
 bookSearchInput.addEventListener("keydown", e => {
   if (e.key === "Enter") searchBooks();
-});
-bookResults.addEventListener("click", e => {
-  const btn = e.target.closest("[data-download]");
-  if (btn) downloadBook(btn);
 });
 bookMineList.addEventListener("click", e => {
   // 暂时下架：原“识别”按钮点击逻辑

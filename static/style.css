@@ -1184,38 +1184,26 @@ body {
   text-decoration: underline;
   word-break: break-all;
 }
-.book-result-sep { color: var(--muted); font-size: 12px; margin: 0 2px; }
 .book-mine-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .book-actions { display: flex; gap: 6px; flex: none; }
 .book-btn {
+  display: inline-block;
   border: none;
   border-radius: 8px;
   padding: 6px 12px;
   font-size: 12px;
+  line-height: 1.4;
   cursor: pointer;
   background: var(--user-bubble);
   color: var(--text);
+  text-decoration: none;
+  white-space: nowrap;
 }
 .book-btn:hover { background: var(--sidebar-hover); }
 .book-btn.primary { background: var(--primary); color: #fff; }
 .book-btn.primary:hover { background: var(--primary-hover); }
 .book-btn.danger { background: #fef2f2; color: #ef4444; }
 .book-btn:disabled { opacity: .55; cursor: not-allowed; }
-.book-btn.downloading {
-  position: relative;
-  overflow: hidden;
-  background: #f3f4f6;
-  color: #6b7280;
-  pointer-events: none;
-}
-.book-btn.downloading .dl-fill {
-  position: absolute;
-  left: 0; top: 0; bottom: 0;
-  width: 0%;
-  background: linear-gradient(90deg, rgba(59,130,246,.45), rgba(96,165,250,.55));
-  transition: width .3s ease;
-}
-.book-btn.downloading .dl-pct { position: relative; z-index: 1; font-weight: 600; }
 
 /* ---------- 我的书籍(Markdown):查看菜单(暂时下架:识别功能下架后不再使用) ---------- */
 .view-menu {

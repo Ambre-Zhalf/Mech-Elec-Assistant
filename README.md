@@ -16,7 +16,7 @@
 - **增强搜索**:检索类回复下方提供「对搜索结果不满意?使用增强搜索」,点击即用 [Anspire AI Search](https://open.anspire.cn/document/docs/searchApi/) 再次检索,结果以可点击链接展示
 - **知识图谱**:学习计划自动转换为与《计算机发展.json》一致的 nodes/edges JSON,回复中出现“一键导入知识图谱”按钮,导入后在内置 D3 力导向图中查看,支持缩放、多布局、图谱管理与导入历史撤销
 - **竞赛推荐**:证书学习资料输出后按专业与目标岗位推荐竞赛,数据来自 `data/gb/大学生工科竞赛榜单.xlsx`,按计算机类 / 电子信息类 / 其他工学类 / 机器人类 / 职业技能类分组;可继续追问某个竞赛的报名方式、赛事内容与备赛建议
-- **图书**:左下角“图书”入口支持搜索图书并下载 PDF 到“我的书籍”,也支持把本机 PDF 拖拽上传并命名保存;共享账号额度用尽会自动切换下一个账号,readzn 不可用时回退直连下载
+- **图书**:左下角“图书”入口支持按书名搜索并返回书籍页与下载链接;点击结果右侧「下载」会在新标签页打开该书的下载页,由浏览器直接下载(服务端不再中转保存),「书籍页」可另开详情页。“我的书籍”支持拖拽上传本机 PDF 并命名保存。国内镜像从 [z-library 镜像大全](https://zz.sodanav.com/) 的「Z-Library镜像入口」卡片动态读取(该页会不定期更新),并自动解析出入口真正落地的站点;解析失败时回退到固定地址
 - **课程**:输入框上方“课程”入口展示课程列表,点“打开”在新标签页打开课程平台
 - **竞赛学习模式**:右下角切换到“竞赛学习模式”后,在新标签页打开竞赛导师站点
 - **PDF 识别(⚠️ 暂时下架)**:利用本机 MinerU 扫描 PDF 书籍(即“我的书籍”每本书的“识别”与“我的书籍(Markdown)”)已暂时下架,相关代码注释保留;图书搜索、下载、上传到“我的书籍”、打开与删除等其余图书功能不受影响
@@ -43,7 +43,7 @@
 | 前端 | 原生 HTML + CSS + JavaScript(零构建) |
 | 图谱渲染 | D3.js(`static/vendor/d3.min.js`) |
 | 数据存储 | SQLite(用户、档案、记忆、会话、知识图谱) |
-| 图书下载 | z-library 镜像站 + readzn 共享账号池 |
+| 图书下载 | 镜像大全(zz.sodanav.com)发现 + Playwright 会话下载 |
 | 竞赛数据 | pandas + openpyxl 读取竞赛榜单 Excel |
 
 ## 项目结构
@@ -217,11 +217,21 @@ mineru-models-download -m pipeline -s modelscope
 | `TOOL_CAP_FIND_RECRUIT` | 招聘入口发现次数上限 | `3` |
 | `AGENT_BROWSER_PATH` | 无头浏览器路径(搜索用) | 自动检测 |
 | `AGENT_BROWSER_CHANNEL` | Playwright 浏览器通道(Windows `msedge` / Linux `chromium`) | 自动 |
-| `ZBOOK_BASE_URL` / `ZBOOK_INDEX_URL` | z-library 镜像站地址 / 镜像入口索引页 | `https://zh.101k.by` / `https://znew.pages.dev/` |
-| `ZBOOK_SHARED_ACCOUNT_URL` | 共享账号服务页(readzn) | `https://readzn.com/zlibrary-shared-account` |
-| `BOOK_SEARCH_MODEL` | 图书功能使用的模型名(预留,当前代码未调用) | `deepseek-flash` |
+| `ZBOOK_INDEX_URL` | 镜像大全页面,读取「Z-Library镜像入口」卡片 | `https://zz.sodanav.com/` |
+| `ZBOOK_BASE_URL` | 兜底镜像地址(镜像大全不可达或解析失败时使用) | `https://zh.834101.ru` |
+| `ZBOOK_STORAGE_STATE` | Playwright 登录状态文件路径(可选,相对项目目录或绝对路径) | 空 |
 | `BOOK_TIMEOUT` | 图书抓取超时(秒) | `25` |
-| `BOOK_BROWSER_CHANNEL` | 图书下载用的浏览器通道 | 自动 |
+| `BOOK_BROWSER_CHANNEL` | 图书搜索与下载使用的浏览器通道 | 自动 |
+
+图书搜索与下载先访问镜像大全,读取「Z-Library镜像入口」卡片里的按钮(镜像一、镜像二…),并跟随跳转解析出入口真正落地的站点,再在该站点检索书名。镜像大全里的入口域名通常只是跳转门面:任意路径都会被 302 到首页,搜索词随之丢失,因此不能直接拿入口域名当检索地址。镜像列表缓存 30 分钟,上次没取到列表时 1 分钟后重试;解析失败或该页改版时自动回退到 `ZBOOK_BASE_URL`。镜像仍会受网络、反爬验证和账号规则影响,程序以实际解析到的书目为准。
+
+镜像需要登录时可配置个人登录状态。在项目目录运行下列命令,将 `<镜像地址>` 替换为 `https://zh.834101.ru`,在浏览器中完成验证与登录后关闭窗口。
+
+```powershell
+python -m playwright codegen --channel msedge --save-storage data/zlibrary-session.json "<镜像地址>"
+```
+
+随后在 `.env` 中设置 `ZBOOK_STORAGE_STATE=data/zlibrary-session.json` 并重启服务。状态文件包含登录凭据,应保存在本机已被 Git 忽略的 `data/` 目录,供搜索时复用浏览器登录态。点击「下载」会在新标签页打开该书的下载页,登录、验证码与下载额度全部由你本机的浏览器处理;游客额度用尽或需要登录时,页面会直接给出提示。
 
 浏览器通道留空时,Windows 会依次尝试 Edge、Chrome 和 Playwright Chromium,Linux 默认使用 Playwright Chromium;显式指定通道时仅使用指定项。网页渲染会校验 HTTPS 证书,并通过 `render_duration_ms` 返回耗时及通过 `error_type` 区分失败原因。服务日志还记录模型、工具和搜索引擎的耗时,便于排查慢请求。
 

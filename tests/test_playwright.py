@@ -137,6 +137,8 @@ class PlaywrightTests(unittest.TestCase):
         browser = MagicMock()
         context = browser.new_context.return_value
         context.cookies.return_value = []
+        context.new_page.return_value.url = "https://example.test/book"
+        context.new_page.return_value.content.return_value = "<html><title>Book</title></html>"
         response = MagicMock()
         response.status_code = 200
         response.headers = {"Content-Length": "5"}
